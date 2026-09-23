@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "doctor": "node bin/benchmark.cjs doctor",
+    "benchmark": "node bin/benchmark.cjs benchmark",
+    "clean": "node bin/benchmark.cjs clean",
+    "audit:public": "node bin/benchmark.cjs audit-public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ajv": "6.15.0"
+  }
+}

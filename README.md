@@ -6,3 +6,5 @@
 Auto-update binaries for [Wasper](https://wasper.app) — local voice-to-text for macOS.
 
 Download the latest version from the [Releases](../../releases) page.
+
+[Reproduce the Parakeet runtime benchmark](benchmarks/parakeet-runtime/)
