@@ -8,7 +8,7 @@ const { canonicalJson } = require('./asr-quality/manifest.cjs');
 const { resolveLayout } = require('./config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./runtime/constants.cjs');
 
-const COMMANDS = new Set(['benchmark', 'doctor', 'recover-corpus', 'smoke', 'clean']);
+const COMMANDS = new Set(['audit-public', 'benchmark', 'doctor', 'recover-corpus', 'smoke', 'clean']);
 const LAYOUT_OPTIONS = new Map([
   ['--cache-dir', 'cacheDir'],
   ['--output-dir', 'outputDir'],
@@ -27,6 +27,9 @@ function parseCommandArguments(argv) {
   }
   const [command, ...argumentsList] = argv;
   if (!COMMANDS.has(command)) throw new TypeError(`unknown runtime benchmark command: ${command}`);
+  if (command === 'audit-public' && argumentsList.length > 0) {
+    throw new TypeError('audit-public does not accept arguments');
+  }
   const options = {
     mode: null,
     cacheDir: null,
@@ -83,12 +86,15 @@ function parseCommandArguments(argv) {
 function createCommandPlan(argv, { homeDirectory } = {}) {
   const { command, cacheDir, outputDir, wasperApp, mode, cohort, acceptSourceTerms } =
     parseCommandArguments(argv);
-  const layout = resolveLayout({
-    ...(cacheDir === null ? {} : { cacheDir }),
-    ...(outputDir === null ? {} : { outputDir }),
-    ...(wasperApp === null ? {} : { wasperApp }),
-    ...(homeDirectory === undefined ? {} : { homeDirectory }),
-  });
+  const layout =
+    command === 'audit-public'
+      ? null
+      : resolveLayout({
+          ...(cacheDir === null ? {} : { cacheDir }),
+          ...(outputDir === null ? {} : { outputDir }),
+          ...(wasperApp === null ? {} : { wasperApp }),
+          ...(homeDirectory === undefined ? {} : { homeDirectory }),
+        });
   return Object.freeze({ command, layout, mode, cohort, acceptSourceTerms, writes: false });
 }
 
@@ -172,6 +178,7 @@ async function runCli(
   argv,
   {
     stdout = process.stdout,
+    auditPublicPackageImpl,
     bootstrapRuntimeImpl,
     cleanImpl,
     createRuntimeAdapterImpl,
@@ -184,6 +191,20 @@ async function runCli(
   } = {}
 ) {
   const plan = createCommandPlan(argv, { homeDirectory });
+  if (plan.command === 'audit-public') {
+    const { auditPublicPackage, formatPublicAuditViolation } = require('./public-audit.cjs');
+    const violations = (auditPublicPackageImpl ?? auditPublicPackage)(
+      require('node:path').resolve(__dirname, '..')
+    );
+    if (violations.length > 0) {
+      for (const violation of violations) {
+        stdout.write(`${formatPublicAuditViolation(violation)}\n`);
+      }
+      throw new Error(`public package audit found ${violations.length} violation(s)`);
+    }
+    stdout.write('Public package audit: clean\n');
+    return Object.freeze({ command: plan.command, violations, writes: false });
+  }
   if (plan.command === 'doctor') {
     const doctor = doctorImpl ?? require('./doctor.cjs').doctor;
     const formatDoctor = require('./doctor.cjs').formatDoctor;
