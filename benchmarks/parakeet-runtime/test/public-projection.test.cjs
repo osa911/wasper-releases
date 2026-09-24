@@ -238,3 +238,21 @@ test('full-run status remains comparable and has no partial-run warning', () => 
   assert.match(report, /Verification: `full-comparison`/u);
   assert.doesNotMatch(report, /^Warning:/mu);
 });
+
+test('public evidence omits invalid run-status values before rendering the report', () => {
+  const run = localRunWithText();
+  const privateValue = 'sensitive-status-value';
+  run.runIdentity = {
+    ...run.runIdentity,
+    cohort: privateValue,
+    mode: privateValue,
+    verification: privateValue,
+  };
+
+  const projection = projectPublicEvidence(run);
+  const report = createPublicReport(projection);
+  const serialized = JSON.stringify({ projection, report });
+
+  assert.equal(projection.run.status, undefined);
+  assert.equal(serialized.includes(privateValue), false);
+});

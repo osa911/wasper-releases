@@ -4,9 +4,20 @@ const { projectPublicFootprint } = require('../footprint.cjs');
 const { projectPublicModelIdentity } = require('../model-identity.cjs');
 
 const PUBLIC_EVIDENCE_SCHEMA = 'wasper.parakeet-runtime-benchmark.public-evidence.v1';
+const PUBLIC_RUN_STATUSES = Object.freeze({
+  full: Object.freeze({ cohort: 'all', verification: 'full-comparison' }),
+  'ready-short': Object.freeze({ cohort: 'short', verification: 'partial-non-comparable' }),
+});
 
 function finite(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function projectedStatus(source) {
+  const expected = PUBLIC_RUN_STATUSES[source?.mode];
+  if (expected === undefined) return undefined;
+  if (source.cohort !== expected.cohort || source.verification !== expected.verification) return undefined;
+  return { cohort: expected.cohort, mode: source.mode, verification: expected.verification };
 }
 
 function projectedIdentity(runIdentity) {
@@ -29,11 +40,8 @@ function projectedIdentity(runIdentity) {
       }
     }
   }
-  const status = {};
-  for (const field of ['cohort', 'mode', 'verification']) {
-    if (typeof source[field] === 'string') status[field] = source[field];
-  }
-  if (Object.keys(status).length > 0) result.status = status;
+  const status = projectedStatus(source);
+  if (status !== undefined) result.status = status;
   return result;
 }
 
