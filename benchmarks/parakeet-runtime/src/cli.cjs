@@ -45,10 +45,14 @@ function parseCommandArguments(argv) {
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     const option = argument === '--output' ? 'output' : LAYOUT_OPTIONS.get(argument);
-    if (!option || options[option] !== null || index + 1 >= argumentsList.length) {
+    if (!option || options[option] !== null) {
       throw new TypeError(`invalid arguments for runtime benchmark command ${command}`);
     }
-    options[option] = argumentsList[index + 1];
+    const value = argumentsList[index + 1];
+    if (typeof value !== 'string' || value === '' || value.startsWith('--')) {
+      throw new TypeError(`${argument} requires a value`);
+    }
+    options[option] = value;
     index += 1;
   }
   if (OUTPUT_COMMANDS.has(command) && options.output === null) {

@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { resolveLayout, writeOwnershipMarker } = require('../src/config.cjs');
+const { parseCommandArguments } = require('../src/cli.cjs');
 const { roots } = require('../src/runtime/adapters/definition.cjs');
 
 const OWNER_FILE = '.wasper-parakeet-runtime-benchmark-owner.json';
@@ -108,6 +109,26 @@ test('resolveLayout rejects output outside the selected cache', t => {
   );
 });
 
+test('resolveLayout rejects a cache root that is a Git repository or worktree', t => {
+  const homeDirectory = temporaryHome(t);
+  const namespaceRoot = path.join(homeDirectory, 'Library/Caches/Wasper/benchmarks');
+
+  for (const [name, createGitEntry] of [
+    ['repository', gitPath => fs.mkdirSync(gitPath)],
+    ['worktree', gitPath => fs.writeFileSync(gitPath, 'gitdir: /tmp/example\n')],
+  ]) {
+    const cacheRoot = path.join(namespaceRoot, name);
+    fs.mkdirSync(cacheRoot);
+    createGitEntry(path.join(cacheRoot, '.git'));
+
+    assert.throws(
+      () => resolveLayout({ cacheDir: cacheRoot, homeDirectory }),
+      /Git repository or worktree/
+    );
+    assert.equal(fs.existsSync(path.join(cacheRoot, OWNER_FILE)), false);
+  }
+});
+
 test('writeOwnershipMarker creates the exact owner document', t => {
   const homeDirectory = temporaryHome(t);
   const layout = resolveLayout({ homeDirectory });
@@ -161,4 +182,15 @@ test('runtime adapter roots use the layout holders root', t => {
   assert.equal(resolved.holderRoot, layout.holdersRoot);
   assert.equal(resolved.repositoryRoot, layout.packageRoot);
   assert.equal(resolved.homeDirectory, homeDirectory);
+});
+
+test('clean layout flags require a separate value', () => {
+  assert.throws(
+    () => parseCommandArguments(['clean', '--cache-dir']),
+    /--cache-dir requires a value/
+  );
+  assert.throws(
+    () => parseCommandArguments(['clean', '--cache-dir', '--output-dir', 'runs']),
+    /--cache-dir requires a value/
+  );
 });

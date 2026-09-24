@@ -59,6 +59,16 @@ function findRepositoryRoot(start) {
   }
 }
 
+function hasGitControlEntry(root) {
+  try {
+    fs.lstatSync(path.join(root, '.git'));
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 function expectedOwnershipMarker(cacheRoot) {
   return {
     schema: OWNER_SCHEMA,
@@ -90,6 +100,9 @@ function resolveLayout(options = {}) {
   }
   if (!isInside(cacheNamespaceRoot, cacheRoot)) {
     throw new Error(`benchmark cache must stay under ${cacheNamespaceRoot}`);
+  }
+  if (hasGitControlEntry(cacheRoot)) {
+    throw new Error('benchmark cache must not be a Git repository or worktree');
   }
 
   const rawOutputRoot = options.outputDir ?? path.join(cacheRoot, 'runs');

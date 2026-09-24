@@ -86,7 +86,7 @@ test('clean removes only generated roots from a marker-owned cache', async t => 
   );
 });
 
-test('clean removes an explicit output root inside the marker-owned cache', async t => {
+test('clean preserves an unrelated explicit output root inside the marker-owned cache', async t => {
   const { homeDirectory, layout: defaultLayout } = ownedLayout(t);
   const outputRoot = path.join(defaultLayout.cacheRoot, 'comparisons', 'candidate-a');
   fs.mkdirSync(outputRoot, { recursive: true });
@@ -100,9 +100,8 @@ test('clean removes an explicit output root inside the marker-owned cache', asyn
 
   const removed = await clean(layout);
 
-  assert.equal(removed.includes(outputRoot), true);
-  assert.equal(fs.existsSync(outputRoot), false);
-  assert.equal(fs.existsSync(path.join(defaultLayout.cacheRoot, 'comparisons')), true);
+  assert.equal(removed.includes(outputRoot), false);
+  assert.equal(fs.readFileSync(path.join(outputRoot, 'result.json'), 'utf8'), '{}');
 });
 
 test('clean leaves a symlink target outside the cache untouched', async t => {
@@ -133,6 +132,72 @@ test('clean rejects a regular file in place of a generated directory', async t =
 
   assert.equal(fs.readFileSync(layout.artifactsRoot, 'utf8'), 'not a generated directory');
   assert.equal(fs.existsSync(path.join(layout.corpusRoot, 'generated.txt')), true);
+});
+
+test('clean rejects an incomplete explicit layout before deleting data', async t => {
+  const { layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+
+  await assert.rejects(
+    clean({
+      cacheRoot: layout.cacheRoot,
+      homeDirectory: layout.homeDirectory,
+      outputRoot: layout.outputRoot,
+      wasperApp: layout.wasperApp,
+    }),
+    /complete resolved layout/
+  );
+
+  assert.equal(fs.existsSync(path.join(layout.artifactsRoot, 'generated.txt')), true);
+});
+
+test('clean rejects a cache that became a Git worktree after layout resolution', async t => {
+  const { layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  fs.writeFileSync(path.join(layout.cacheRoot, '.git'), 'gitdir: /tmp/example\n');
+
+  await assert.rejects(clean(layout), /Git repository or worktree/);
+
+  assert.equal(fs.existsSync(path.join(layout.holdersRoot, 'generated.txt')), true);
+});
+
+test('clean cannot follow an interleaved cache-root replacement to external data', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const retainedFile = path.join(layout.cacheRoot, 'keep.txt');
+  fs.writeFileSync(retainedFile, 'keep');
+
+  const externalRoot = path.join(homeDirectory, 'external-replacement');
+  const externalArtifact = path.join(externalRoot, 'artifacts', 'important.txt');
+  fs.mkdirSync(path.dirname(externalArtifact), { recursive: true });
+  fs.writeFileSync(externalArtifact, 'external');
+  const displacedCache = path.join(homeDirectory, 'displaced-owned-cache');
+  const originalRm = fs.promises.rm;
+  let interleaved = false;
+  fs.promises.rm = async (...argumentsList) => {
+    if (!interleaved) {
+      interleaved = true;
+      if (fs.existsSync(layout.cacheRoot)) fs.renameSync(layout.cacheRoot, displacedCache);
+      fs.symlinkSync(externalRoot, layout.cacheRoot);
+    }
+    return originalRm(...argumentsList);
+  };
+
+  try {
+    await assert.rejects(clean(layout), /cache root was replaced during cleanup/);
+  } finally {
+    fs.promises.rm = originalRm;
+  }
+
+  assert.equal(fs.readFileSync(externalArtifact, 'utf8'), 'external');
+  assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'keep');
+  assert.equal(
+    fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
+    true
+  );
 });
 
 test('clean reports each canonical generated root before deleting it', async t => {
