@@ -267,7 +267,7 @@ test('checks the bootstrap python3, Swift, and each unique ready-runtime package
   assert.equal(check(result, 'python-package:onnxruntime').state, 'blocked');
   assert.equal(
     check(result, 'python-package:onnxruntime').remediation,
-    '/opt/homebrew/bin/python3 -m pip install onnxruntime==1.30.0'
+    'Create and activate the isolated .venv described in README.md, then run: python -m pip install onnxruntime==1.30.0'
   );
   assert.deepEqual(packageProbes, [
     { executable: '/opt/homebrew/bin/python3', packageName: 'onnx-asr' },

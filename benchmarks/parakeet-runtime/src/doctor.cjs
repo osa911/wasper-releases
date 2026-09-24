@@ -19,6 +19,8 @@ const BOOTSTRAP_PYTHON_PROBE = Object.freeze([
   '-c',
   'import os; assert {os.open, os.link, os.unlink} <= os.supports_dir_fd',
 ]);
+const VIRTUAL_ENVIRONMENT_REMEDIATION =
+  'Create and activate the isolated .venv described in README.md, then run:';
 
 function existingAncestor(candidate) {
   let current = candidate;
@@ -275,7 +277,7 @@ function doctor(layout, runtimeLock, dependencies = {}) {
           : bootstrapPythonReady
             ? `${pkg.name}==${pkg.version} is required in ${bootstrapPython}; found ${actual ?? 'missing'}.`
             : `${pkg.name}==${pkg.version} requires a working python3 bootstrap executable.`,
-        `${bootstrapPythonReady ? bootstrapPython : 'python3'} -m pip install ${pkg.name}==${pkg.version}`
+        `${VIRTUAL_ENVIRONMENT_REMEDIATION} python -m pip install ${pkg.name}==${pkg.version}`
       )
     );
   }

@@ -1,9 +1,11 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 const test = require('node:test');
 const { resolveLayout } = require('../src/config.cjs');
 const { loadRuntimeLock } = require('../src/runtime/locks.cjs');
@@ -11,6 +13,61 @@ const { bootstrapRuntime } = require('../src/runtime/bootstrap.cjs');
 const { execFileSync } = require('node:child_process');
 const { runtimeFixture } = require('./runtime-fixture.cjs');
 const { writeOwnershipMarker } = require('../src/config.cjs');
+
+function runtimeArchive(entries) {
+  return execFileSync(
+    '/usr/bin/python3',
+    [
+      '-c',
+      [
+        'import io,json,sys,tarfile',
+        'out=io.BytesIO()',
+        'with tarfile.open(fileobj=out, mode="w:gz") as archive:',
+        ' for entry in json.loads(sys.argv[1]):',
+        '  member=tarfile.TarInfo(entry["name"])',
+        '  member.mode=entry.get("mode", 0o755 if entry.get("kind")=="file" else 0o644)',
+        '  if entry.get("kind")=="directory":',
+        '   member.type=tarfile.DIRTYPE',
+        '   archive.addfile(member)',
+        '  elif entry.get("kind")=="symlink":',
+        '   member.type=tarfile.SYMTYPE',
+        '   member.linkname=entry["target"]',
+        '   archive.addfile(member)',
+        '  else:',
+        '   data=entry["data"].encode()',
+        '   member.size=len(data)',
+        '   archive.addfile(member, io.BytesIO(data))',
+        'sys.stdout.buffer.write(out.getvalue())',
+      ].join('\n'),
+      JSON.stringify(entries),
+    ],
+    { encoding: null }
+  );
+}
+
+function configureArchiveRuntime(fixture, archive) {
+  const sha256 = crypto.createHash('sha256').update(archive).digest('hex');
+  fixture.runtime.source = undefined;
+  fixture.runtime.command = '{holder}/release/nemo-speech/bin/probe';
+  fixture.runtime.artifactRedirectHosts['github.com'] = ['github.com'];
+  fixture.runtime.build = {
+    kind: 'archive',
+    directory: 'release',
+    archive: {
+      path: 'runtime.tar.gz',
+      url: 'https://github.com/fixture/runtime/releases/download/v1/runtime.tar.gz',
+      sha256,
+      sizeBytes: archive.length,
+      root: 'nemo-speech',
+    },
+    outputs: ['release/nemo-speech/bin/probe'],
+  };
+  fixture.dependencies.fetchImpl = async url => ({
+    status: 200,
+    ok: true,
+    body: Readable.from([url === fixture.runtime.build.archive.url ? archive : fixture.state.body]),
+  });
+}
 
 test('blocks Local MLX INT8 and Fluid before creating a cache or fetching inputs', async t => {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-bootstrap-')));
@@ -40,6 +97,81 @@ test('clones the pinned Git source, verifies HTTP bytes and builds only inside o
   await assert.rejects(
     bootstrapRuntime('handy-gguf-q8', { layout, lock }, dependencies),
     /SHA-256|size mismatch/
+  );
+});
+
+test('extracts a locked runtime archive without a local source build', async t => {
+  const fixture = await runtimeFixture(t);
+  const archive = runtimeArchive([
+    { name: 'nemo-speech', kind: 'directory' },
+    { name: 'nemo-speech/bin', kind: 'directory' },
+    {
+      name: 'nemo-speech/bin/probe',
+      kind: 'file',
+      mode: 0o755,
+      data: '#!/bin/sh\necho archive-runtime\n',
+    },
+    { name: 'nemo-speech/lib', kind: 'directory' },
+    { name: 'nemo-speech/lib/libprobe.1.dylib', kind: 'file', data: 'runtime library' },
+    {
+      name: 'nemo-speech/lib/libprobe.dylib',
+      kind: 'symlink',
+      target: 'libprobe.1.dylib',
+    },
+  ]);
+  configureArchiveRuntime(fixture, archive);
+
+  const result = await bootstrapRuntime(
+    'handy-gguf-q8',
+    { layout: fixture.layout, lock: fixture.authority },
+    fixture.dependencies
+  );
+
+  assert.equal(execFileSync(result.outputs[0], { encoding: 'utf8' }).trim(), 'archive-runtime');
+  assert.equal(
+    fs.readlinkSync(
+      path.join(fixture.layout.holdersRoot, 'handy-gguf-q8/release/nemo-speech/lib/libprobe.dylib')
+    ),
+    'libprobe.1.dylib'
+  );
+});
+
+test('rejects an archive link that escapes the locked runtime root', async t => {
+  const fixture = await runtimeFixture(t);
+  const archive = runtimeArchive([
+    { name: 'nemo-speech', kind: 'directory' },
+    { name: 'nemo-speech/bin', kind: 'directory' },
+    { name: 'nemo-speech/bin/probe', kind: 'file', mode: 0o755, data: '#!/bin/sh\nexit 0\n' },
+    { name: 'nemo-speech/lib', kind: 'directory' },
+    { name: 'nemo-speech/lib/escape.dylib', kind: 'symlink', target: '../../outside' },
+  ]);
+  configureArchiveRuntime(fixture, archive);
+
+  await assert.rejects(
+    bootstrapRuntime(
+      'handy-gguf-q8',
+      { layout: fixture.layout, lock: fixture.authority },
+      fixture.dependencies
+    ),
+    /archive.*symlink|symlink.*archive/i
+  );
+  assert.equal(fs.existsSync(path.join(fixture.layout.holdersRoot, 'handy-gguf-q8/release/outside')), false);
+});
+
+test('provides the operating-system home directory to CMake builds', async t => {
+  const fixture = await runtimeFixture(t);
+  const cmake = execFileSync('/usr/bin/which', ['cmake'], { encoding: 'utf8' }).trim();
+  const wrapper = path.join(fixture.root, 'cmake-requiring-home');
+  fs.writeFileSync(
+    wrapper,
+    `#!/bin/sh\n[ \"$HOME\" = \"${os.homedir()}\" ] || exit 42\nexec \"${cmake}\" \"$@\"\n`
+  );
+  fs.chmodSync(wrapper, 0o755);
+
+  await bootstrapRuntime(
+    'handy-gguf-q8',
+    { layout: fixture.layout, lock: fixture.authority },
+    { ...fixture.dependencies, tools: { cmake: wrapper } }
   );
 });
 

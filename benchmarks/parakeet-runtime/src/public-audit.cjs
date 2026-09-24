@@ -4,7 +4,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const EXCLUDED_DIRECTORY_NAMES = new Set(['.git', 'node_modules']);
+const EXCLUDED_DIRECTORY_NAMES = new Set(['.git', '.venv', 'node_modules']);
 const SOURCE_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const FORBIDDEN_TEXT_PATTERNS = Object.freeze([
   {
@@ -145,7 +145,7 @@ import os
 import stat
 import sys
 
-EXCLUDED_DIRECTORY_NAMES = {'.git', 'node_modules'}
+EXCLUDED_DIRECTORY_NAMES = {'.git', '.venv', 'node_modules'}
 MAX_AUDIT_ENTRY_COUNT = ${limits.maxEntries}
 MAX_AUDIT_FILE_BYTES = ${limits.maxFileBytes}
 MAX_AUDIT_METADATA_BYTES = ${limits.maxMetadataBytes}

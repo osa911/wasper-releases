@@ -189,7 +189,9 @@ function projectedRuntimeIdentities(activations) {
   for (const activation of activations ?? []) {
     if (typeof activation?.cellId !== 'string' || byRuntime.has(activation.cellId)) continue;
     if (!activation.identity) continue;
-    const identity = projectPublicModelIdentity(activation.identity);
+    const identity = projectPublicModelIdentity(
+      activation.identity.modelEvidence ?? activation.identity
+    );
     byRuntime.set(activation.cellId, {
       cellId: activation.cellId,
       ...(identity.identityHash === undefined ? {} : { identityHash: identity.identityHash }),

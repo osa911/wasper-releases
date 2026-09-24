@@ -40,9 +40,15 @@ brew install node@22
 brew install python@3.12
 brew install cmake
 npm ci
-python3 -m pip install parakeet-mlx==0.5.2 mlx==0.32.2 onnx-asr==0.12.0 onnxruntime==1.30.0
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install parakeet-mlx==0.5.2 mlx==0.32.2 onnx-asr==0.12.0 onnxruntime==1.30.0
 npm run doctor
 ```
+
+Keep `.venv` activated whenever you run `npm run doctor`, `npm run benchmark`,
+or `npm run smoke`. The benchmark uses the active `python3` so its pinned
+runtime packages stay isolated from the system Python installation.
 
 `npm run doctor` is read-only. It does not install software, create the cache,
 download a model, or fetch a corpus. It prints the hardware, Darwin platform
@@ -58,10 +64,11 @@ The doctor requires at least 24 GiB of free disk. This is a preflight floor,
 not an exact cache size. No measured full-run elapsed time or cache size is
 available while the full cohort is blocked.
 
-If doctor reports a missing requirement, use the command it prints. The manual
-remediations documented here are `xcode-select --install`, `brew install
-node@22`, `brew install python@3.12`, `brew install cmake`, `python3 -m pip
-install <package>==<version>`, and `npm run clean`.
+If doctor reports a missing Python package, activate `.venv` and use the
+command it prints. The manual remediations documented here are
+`xcode-select --install`, `brew install node@22`, `brew install python@3.12`,
+`brew install cmake`, `python -m pip install <package>==<version>`, and
+`npm run clean`.
 If doctor reports that Wasper.app is missing, complete these steps:
 
 1. Download the current macOS archive from [Wasper releases](https://github.com/osa911/wasper-releases/releases).
@@ -165,7 +172,7 @@ family.
 | MLX Community F32/BF16 | [model](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3); [parakeet-mlx](https://pypi.org/project/parakeet-mlx/0.5.2/); [MLX](https://pypi.org/project/mlx/0.32.2/) | Ready |
 | Local MLX INT8 | [model](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3); [parakeet-mlx](https://pypi.org/project/parakeet-mlx/0.5.2/); [MLX](https://pypi.org/project/mlx/0.32.2/) | Blocked: no verified public historical conversion/output identity |
 | Handy Q8 | [model](https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf); [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) | Ready |
-| NVIDIA Q8 | [model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3); [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) | Ready |
+| NVIDIA Q8 | [model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3); [NVIDIA's v0.1.0 macOS Metal archive](https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz) | Ready |
 | Istupakov ONNX INT8 | [model](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx); [onnx-asr](https://pypi.org/project/onnx-asr/0.12.0/); [onnxruntime](https://pypi.org/project/onnxruntime/1.30.0/) | Ready |
 | Fluid Core ML | [model](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml); [FluidAudio](https://github.com/FluidInference/FluidAudio) | Blocked: conflicting model-license metadata and no historical clean-source equivalence |
 

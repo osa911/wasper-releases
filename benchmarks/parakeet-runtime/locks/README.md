@@ -40,12 +40,12 @@ Tool caches live under its `.tool-cache` child. Model files live under
 refuses an unmarked nonempty root. It does not download or install Wasper.app.
 The released app must already be installed for activation.
 
-Bootstrap fetches every locked Swift binary dependency URL into
-`artifacts/<runtimeId>/.binary-dependencies/<sha256>.zip` and checks its SHA-256
-before any build. These archives are also rehashed on reuse and activation.
-Archive transfers without a locked size have a 1 GiB limit. Swift Package
-Manager still enforces the checksum in the pinned source manifest for the
-archive it consumes. Bootstrap does not unpack archives itself.
+Bootstrap fetches every locked model, runtime archive, and Swift binary dependency
+into `artifacts/<runtimeId>` and checks its SHA-256 before any build. These
+archives are also rehashed on reuse and activation. A verified runtime archive is
+extracted only into its locked holder build directory; Swift Package Manager still
+enforces the checksum in the pinned source manifest for each Swift archive it
+consumes. Archive transfers without a locked size have a 1 GiB limit.
 
 `verifyRuntimeInstallation(runtimeId, { layout, lock, python })` verifies an
 existing installation without downloading or building. Adapter creation and
@@ -103,6 +103,6 @@ classification.
 - [Wasper public v6 model](https://huggingface.co/osa911/wasper-parakeet-tdt-0.6b-v3-onnx-int8/tree/6f123e3b29b0fcd3edc305f4700b5cf28a735b96).
 - [MLX model](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/tree/ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15).
 - [Handy model](https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/tree/90f082450fcbacdb54e5900c44ef697c9ea59622) and [source](https://github.com/handy-computer/transcribe.cpp/tree/63a44d9239d610b3908e8a66b384924cd4a77217).
-- [NVIDIA model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/tree/541d1f99c6b0c3cd0b11a95167540bb8edefd82b) and [source](https://github.com/NVIDIA/NeMo-Speech.cpp/tree/4f9676226f667d14608487df744f375db87127f8).
+- [NVIDIA model](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/tree/541d1f99c6b0c3cd0b11a95167540bb8edefd82b) and [v0.1.0 macOS Metal runtime archive](https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz).
 - [Istupakov model](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/tree/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce).
 - [Clean FluidAudio source](https://github.com/FluidInference/FluidAudio/tree/69e42dae8ed12a08c9bd6741080dae741d309a09).

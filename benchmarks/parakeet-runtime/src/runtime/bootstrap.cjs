@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { execFile, execFileSync } = require('node:child_process');
 const childProcess = require('node:child_process');
@@ -15,6 +16,7 @@ const { isInside } = require('../config.cjs');
 const execute = promisify(execFile);
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const MAX_ARTIFACT_REDIRECTS = 5;
+const RUNTIME_ARCHIVE_EXTRACTOR = path.join(__dirname, 'extract-runtime-archive.py');
 const RETRY =
   'Install the documented prerequisite, then run npm run benchmark -- full --accept-source-terms again.';
 
@@ -25,6 +27,7 @@ function runtimeArtifacts(runtime) {
   };
   return [
     ...runtime.artifacts.map(withRedirectHosts),
+    ...(runtime.build.archive === undefined ? [] : [withRedirectHosts(runtime.build.archive)]),
     ...(runtime.build.binaryDependencies ?? []).map(dependency =>
       withRedirectHosts({ ...dependency, path: `.binary-dependencies/${dependency.sha256}.zip` })
     ),
@@ -35,6 +38,7 @@ function processEnvironment(storage) {
   const cache = storage.directory(path.join(storage.layout.holdersRoot, '.tool-cache'));
   const temp = storage.directory(path.join(cache, 'tmp'));
   return {
+    HOME: os.homedir(),
     PATH: process.env.PATH,
     LANG: 'C',
     TMPDIR: temp,
@@ -442,6 +446,55 @@ async function buildSwift(runtime, holderRoot, storage, python, env, tools, depe
     throw new Error('Swift resolved source differs from lock');
 }
 
+async function extractRuntimeArchive(runtime, holderRoot, artifactRoot, storage, python, env) {
+  const archive = runtime.build.archive;
+  const archivePath = path.join(artifactRoot, archive.path);
+  const destination = storage.directory(path.join(holderRoot, runtime.build.directory));
+  if (fs.readdirSync(destination).length) {
+    throw new Error('refusing a nonempty runtime archive destination without a verified receipt');
+  }
+  storage.regular(archivePath);
+  const archiveDescriptor = fs.openSync(archivePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const destinationDescriptor = storage.openDirectory(destination);
+  try {
+    await new Promise((resolve, reject) => {
+      const child = childProcess.spawn(
+        python,
+        [
+          '-I',
+          '-S',
+          '-B',
+          RUNTIME_ARCHIVE_EXTRACTOR,
+          archive.sha256,
+          String(archive.sizeBytes),
+          archive.root,
+        ],
+        {
+          cwd: '/',
+          env,
+          stdio: ['ignore', 'ignore', 'pipe', archiveDescriptor, destinationDescriptor],
+          timeout: 10 * 60 * 1000,
+          killSignal: 'SIGKILL',
+        }
+      );
+      let stderr = '';
+      child.stderr.on('data', chunk => {
+        stderr = (stderr + chunk.toString()).slice(-65536);
+      });
+      child.once('error', reject);
+      child.once('close', code =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`runtime archive extraction failed: ${stderr.trim() || String(code)}`))
+      );
+    });
+    storage.check();
+  } finally {
+    fs.closeSync(destinationDescriptor);
+    fs.closeSync(archiveDescriptor);
+  }
+}
+
 async function bootstrapRuntime(
   runtimeId,
   { layout, lock = loadRuntimeLock(), python = 'python3' } = {},
@@ -526,6 +579,8 @@ async function bootstrapRuntime(
       }
       if (runtime.build.kind === 'swift')
         await buildSwift(runtime, holderRoot, storage, python, env, tools, dependencies);
+      if (runtime.build.kind === 'archive')
+        await extractRuntimeArchive(runtime, holderRoot, artifactRoot, storage, python, env);
       const outputHashes = outputs.map(file => outputHash(file, holderRoot, storage));
       storage.writeExclusive(
         receiptPath,

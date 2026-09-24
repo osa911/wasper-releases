@@ -10,8 +10,14 @@ const PUBLIC_ARTIFACT_REDIRECT_HOSTS = new Set([
   'huggingface.co',
   'cdn-lfs.hf.co',
   'cdn-lfs-us-1.hf.co',
+  'cdn-lfs-eu-1.hf.co',
   'cas-bridge.xethub.hf.co',
+  'cas-server.xethub.hf.co',
+  'cas-server.xethub-eu.hf.co',
   'transfer.xethub.hf.co',
+  'transfer.xethub-eu.hf.co',
+  'us.aws.cdn.hf.co',
+  'us.gcp.cdn.hf.co',
   'github.com',
   'objects.githubusercontent.com',
   'release-assets.githubusercontent.com',
@@ -140,9 +146,32 @@ function validateRuntimeLock(value, authority = readAuthority()) {
     ) {
       throw new Error('runtime lock must name each reproduction blocker');
     }
+    if (!['none', 'cmake', 'swift', 'archive'].includes(runtime.build?.kind))
+      throw new Error('runtime lock has an unsupported build kind');
     relativePath(runtime.modelFile);
     if (runtime.build.directory) relativePath(runtime.build.directory);
     for (const output of runtime.build.outputs ?? []) relativePath(output);
+    if (runtime.build.kind === 'archive') {
+      const archive = runtime.build.archive;
+      if (
+        archive === null ||
+        typeof archive !== 'object' ||
+        !/^[a-f0-9]{64}$/u.test(archive.sha256) ||
+        !Number.isSafeInteger(archive.sizeBytes) ||
+        archive.sizeBytes <= 0 ||
+        typeof archive.root !== 'string' ||
+        !archive.root ||
+        ['.', '..'].includes(archive.root) ||
+        archive.root.includes('/') ||
+        archive.root.includes('\\')
+      ) {
+        throw new Error('runtime archive lock is invalid');
+      }
+      publicUrl(archive.url);
+      relativePath(archive.path);
+    } else if (runtime.build.archive !== undefined) {
+      throw new Error('only archive builds may define a runtime archive');
+    }
     for (const pkg of runtime.pythonPackages) publicUrl(pkg.url);
     for (const file of [...(runtime.bridgeFiles ?? []), ...(runtime.build.bridgeFiles ?? [])]) {
       relativePath(file.path);

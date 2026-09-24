@@ -40,6 +40,7 @@ const requiredPaths = [
   'src/runtime/corpus-path.cjs',
   'src/runtime/corpus-recovery.cjs',
   'src/runtime/evidence-store.cjs',
+  'src/runtime/extract-runtime-archive.py',
   'src/runtime/fluid-audio-source.cjs',
   'src/runtime/footprint.cjs',
   'src/runtime/language-policy.cjs',

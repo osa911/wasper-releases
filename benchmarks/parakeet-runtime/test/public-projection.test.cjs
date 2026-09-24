@@ -22,28 +22,33 @@ function localRunWithText() {
         cellId: 'wasper-metal-int8',
         pass: 1,
         identity: {
-          identityHash: 'd'.repeat(64),
-          identity: {
-            schema: 'wasper.parakeet-runtime-benchmark.model-identity.v2',
-            artifacts: [
-              { path: '/private/models/model.bin', bytes: 42, sha256: 'e'.repeat(64) },
-            ],
-            executable: {
-              path: '/private/bin/runtime',
-              version: '1.0.0',
-              versionEvidence: {
-                command: ['/private/bin/runtime', '--version'],
-                rawOutput: 'private version output',
+          schema: 'wasper.parakeet-runtime-benchmark.private-adapter-identity.v1',
+          visibility: 'private-evidence',
+          runtime: { name: 'private runtime metadata' },
+          modelEvidence: {
+            identityHash: 'd'.repeat(64),
+            identity: {
+              schema: 'wasper.parakeet-runtime-benchmark.model-identity.v2',
+              artifacts: [
+                { path: '/private/models/model.bin', bytes: 42, sha256: 'e'.repeat(64) },
+              ],
+              executable: {
+                path: '/private/bin/runtime',
+                version: '1.0.0',
+                versionEvidence: {
+                  command: ['/private/bin/runtime', '--version'],
+                  rawOutput: 'private version output',
+                },
               },
+              packages: [
+                {
+                  name: 'runtime-package',
+                  version: '2.0.0',
+                  versionEvidence: { command: ['pip'], rawOutput: 'private package output' },
+                },
+              ],
+              launchCommand: ['/private/bin/runtime', '--model', '/private/models/model.bin'],
             },
-            packages: [
-              {
-                name: 'runtime-package',
-                version: '2.0.0',
-                versionEvidence: { command: ['pip'], rawOutput: 'private package output' },
-              },
-            ],
-            launchCommand: ['/private/bin/runtime', '--model', '/private/models/model.bin'],
           },
         },
       },
@@ -169,7 +174,7 @@ test('public evidence strips numeric metrics from incomplete long workloads', ()
 test('public evidence derives the Wasper release label from the runtime identity', () => {
   const run = localRunWithText();
   delete run.runIdentity.wasperRelease;
-  run.activations[0].identity.identity.release = {
+  run.activations[0].identity.modelEvidence.identity.release = {
     version: '1.8.1',
     nativeServerSha256: 'c'.repeat(64),
     baselineKind: 'newer-release',

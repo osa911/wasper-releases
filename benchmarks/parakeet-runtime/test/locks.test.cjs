@@ -19,6 +19,7 @@ const ids = [
   'istupakov-onnx-int8',
   'fluid-coreml-mixed',
 ];
+const HUGGING_FACE_CDN_EDGE_HOST = 'us.aws.cdn.hf.co';
 
 test('loads seven ordered public runtimes and the released Wasper binary identity', () => {
   const lock = loadRuntimeLock();
@@ -43,6 +44,12 @@ test('loads seven ordered public runtimes and the released Wasper binary identit
     seconds: 120,
     overlapSeconds: 15,
   });
+  for (const runtime of lock.runtimes.filter(runtime => runtime.artifactRedirectHosts['huggingface.co'])) {
+    assert.ok(
+      runtime.artifactRedirectHosts['huggingface.co'].includes(HUGGING_FACE_CDN_EDGE_HOST),
+      `${runtime.id} must permit the documented Hugging Face CDN edge`
+    );
+  }
 });
 
 test('load rejects changed public URLs, revisions, hashes, IDs and language policy', t => {
@@ -146,6 +153,27 @@ test('requires each artifact redirect host to be a checked-in public family memb
     mutate(lock);
     assert.throws(() => validateRuntimeLock(lock, lock), /artifact redirect host/i);
   }
+});
+
+test('pins NVIDIA’s official macOS Metal runtime archive', () => {
+  const nvidia = loadRuntimeLock().runtimes.find(runtime => runtime.id === 'nvidia-gguf-q8');
+
+  assert.deepEqual(
+    nvidia.build,
+    {
+      kind: 'archive',
+      directory: 'release',
+      archive: {
+        path: 'nemo-speech-0.1.0-macos-aarch64-metal.tar.gz',
+        url: 'https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-macos-aarch64-metal.tar.gz',
+        sha256: 'f1dff4f9dd9c96214f8cb78b982812459132df8a4ad1a42409fd94de4a366244',
+        sizeBytes: 3465028,
+        root: 'nemo-speech',
+      },
+      outputs: ['release/nemo-speech/bin/nemo-speech'],
+    }
+  );
+  assert.equal(nvidia.source, undefined);
 });
 
 test('adapters derive public artifact and holder paths and selected Python from the lock', () => {

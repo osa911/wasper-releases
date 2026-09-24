@@ -294,6 +294,23 @@ test('clean removes only generated roots from a marker-owned cache', async t => 
   );
 });
 
+test('clean unlinks an internal CMake-style link without following its target', async t => {
+  const { layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const retainedTarget = path.join(layout.cacheRoot, 'retained-cmake-target.dylib');
+  fs.writeFileSync(retainedTarget, 'retain this target');
+  fs.symlinkSync(
+    retainedTarget,
+    path.join(layout.holdersRoot, 'build-shared-link.dylib')
+  );
+
+  await clean(layout);
+
+  assert.equal(fs.readFileSync(retainedTarget, 'utf8'), 'retain this target');
+  assert.equal(fs.existsSync(layout.holdersRoot), false);
+});
+
 test('clean ignores a PATH-shadowed Python executable', async t => {
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);

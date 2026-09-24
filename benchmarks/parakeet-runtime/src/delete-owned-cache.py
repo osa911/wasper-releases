@@ -76,7 +76,11 @@ def delete_entry(parent_fd, name, label, expected_stat=None):
     except FileNotFoundError:
         return False
     if stat.S_ISLNK(entry_stat.st_mode):
-        raise UnsafeCleanupError(f"{label} is a symlink")
+        # CMake build trees legitimately contain library and executable links.
+        # Unlinking by the already-pinned parent descriptor never follows the
+        # target, so it removes only the generated link.
+        os.unlink(name, dir_fd=parent_fd)
+        return True
     if not stat.S_ISDIR(entry_stat.st_mode) and not stat.S_ISREG(entry_stat.st_mode):
         raise UnsafeCleanupError(f"{label} has an unsupported file type")
 

@@ -52,6 +52,16 @@ function writeSource(directory, fileName, fragments) {
   fs.writeFileSync(path.join(directory, fileName), fragments.join(''));
 }
 
+test('public audit ignores the documented local virtual environment directory', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const environment = path.join(fixturePackage, '.venv');
+  fs.mkdirSync(environment);
+  fs.writeFileSync(path.join(environment, 'private.txt'), privateFixtureValues().privateUserPath);
+
+  assert.deepEqual(auditPublicPackage(fixturePackage), []);
+});
+
 function symlinkFixture(t) {
   const fixturePackage = temporaryPackage(t);
   const values = privateFixtureValues();
