@@ -256,3 +256,14 @@ test('public evidence omits invalid run-status values before rendering the repor
   assert.equal(projection.run.status, undefined);
   assert.equal(serialized.includes(privateValue), false);
 });
+
+test('public evidence omits inherited-object status names before rendering the report', () => {
+  const run = localRunWithText();
+  run.runIdentity = { ...run.runIdentity, mode: 'toString' };
+
+  const projection = projectPublicEvidence(run);
+  const report = createPublicReport(projection);
+
+  assert.equal(projection.run.status, undefined);
+  assert.equal(report.includes('toString'), false);
+});

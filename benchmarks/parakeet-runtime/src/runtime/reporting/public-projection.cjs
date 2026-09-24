@@ -14,8 +14,10 @@ function finite(value) {
 }
 
 function projectedStatus(source) {
+  if (typeof source?.mode !== 'string' || !Object.hasOwn(PUBLIC_RUN_STATUSES, source.mode)) {
+    return undefined;
+  }
   const expected = PUBLIC_RUN_STATUSES[source?.mode];
-  if (expected === undefined) return undefined;
   if (source.cohort !== expected.cohort || source.verification !== expected.verification) return undefined;
   return { cohort: expected.cohort, mode: source.mode, verification: expected.verification };
 }
