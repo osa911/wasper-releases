@@ -24,8 +24,9 @@ await bootstrapRuntime('handy-gguf-q8', { layout, lock, python: 'python3' });
 
 The optional `python` argument selects an existing Python 3 executable.
 Every bootstrap download requires its descriptor-relative file operations.
-The stdlib-only download helper inherits a verified owned-directory descriptor;
-parent-path replacement cannot redirect its file creation or promotion.
+The stdlib-only download and exclusive-write helpers inherit a verified
+owned-directory descriptor. Parent-path replacement cannot redirect model or
+dependency downloads, staged bridge files, or bootstrap receipts.
 Bootstrap also checks each required Python package version. It does not install
 Python packages, developer tools, Homebrew, or any system package. MLX requires
 `parakeet-mlx==0.5.2` and `mlx==0.32.2`. ONNX requires `onnx-asr==0.12.0`

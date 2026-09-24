@@ -311,7 +311,7 @@ function verifyStagedBridge(runtime, holderRoot, storage) {
   }
 }
 
-async function buildSwift(runtime, holderRoot, storage, env, tools, dependencies) {
+async function buildSwift(runtime, holderRoot, storage, python, env, tools, dependencies) {
   const bridge = storage.directory(path.join(holderRoot, runtime.build.directory));
   const input =
     dependencies.bridgeRoot ??
@@ -321,7 +321,8 @@ async function buildSwift(runtime, holderRoot, storage, env, tools, dependencies
     if (crypto.createHash('sha256').update(bytes).digest('hex') !== entry.sha256)
       throw new Error('bridge source SHA-256 mismatch');
     const destination = path.join(bridge, entry.path);
-    if (!fs.existsSync(destination)) storage.writeExclusive(destination, bytes);
+    if (!fs.existsSync(destination))
+      storage.writeExclusive(destination, bytes, { python, env });
     if (storage.hashFile(destination).sha256 !== entry.sha256)
       throw new Error('staged bridge source SHA-256 mismatch');
   }
@@ -481,7 +482,7 @@ async function bootstrapRuntime(
         );
       }
       if (runtime.build.kind === 'swift')
-        await buildSwift(runtime, holderRoot, storage, env, tools, dependencies);
+        await buildSwift(runtime, holderRoot, storage, python, env, tools, dependencies);
       const outputHashes = outputs.map(file => outputHash(file, holderRoot, storage));
       storage.writeExclusive(
         receiptPath,
@@ -490,7 +491,8 @@ async function bootstrapRuntime(
           outputHashes,
           python,
           buildInventory: buildInventory(runtime, holderRoot, storage),
-        })
+        }),
+        { python, env }
       );
     }
     storage.check();

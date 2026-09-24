@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 const { isDeepStrictEqual } = require('node:util');
 const {
   resolveLayout,
@@ -112,18 +113,34 @@ function ownedRuntimeStorage(supplied, { create = true } = {}) {
       fs.closeSync(fd);
     }
   }
-  function writeExclusive(file, bytes) {
+  function writeExclusive(file, bytes, { python, env } = {}) {
+    if (typeof python !== 'string' || !python) {
+      throw new TypeError('owned exclusive write requires a selected Python executable');
+    }
     directory(path.dirname(file));
-    const fd = fs.openSync(
-      file,
-      fs.constants.O_WRONLY |
-        fs.constants.O_CREAT |
-        fs.constants.O_EXCL |
-        fs.constants.O_NOFOLLOW,
-      0o600
-    );
+    const fd = openDirectory(path.dirname(file));
     try {
-      fs.writeFileSync(fd, bytes);
+      const result = childProcess.spawnSync(
+        python,
+        ['-I', '-B', path.join(__dirname, 'owned-write.py'), path.basename(file)],
+        {
+          cwd: layout.cacheRoot,
+          env,
+          input: bytes,
+          encoding: 'utf8',
+          stdio: ['pipe', 'ignore', 'pipe', fd],
+          timeout: 60_000,
+        }
+      );
+      if (result.error) {
+        throw new Error(`owned exclusive write failed: ${result.error.message}`, {
+          cause: result.error,
+        });
+      }
+      if (result.signal) throw new Error(`owned exclusive write exited from ${result.signal}`);
+      if (result.status !== 0) {
+        throw new Error(`owned exclusive write failed: ${(result.stderr ?? '').trim()}`);
+      }
     } finally {
       fs.closeSync(fd);
     }
@@ -138,7 +155,7 @@ function ownedRuntimeStorage(supplied, { create = true } = {}) {
     try {
       const info = fs.fstatSync(fd);
       if (!info.isDirectory() || identity(info) !== directories.get(target)) {
-        throw new Error('runtime download directory changed while opening');
+        throw new Error('runtime owned directory changed while opening');
       }
       check();
       return fd;

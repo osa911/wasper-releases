@@ -158,6 +158,44 @@ test('a post-verification parent replacement cannot create or write an external 
   assert.equal(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8'), 'unchanged');
 });
 
+test('a post-verification receipt-parent replacement cannot create an external receipt', async t => {
+  const fixture = await runtimeFixture(t);
+  const parent = path.join(fixture.layout.artifactsRoot, 'handy-gguf-q8');
+  const receipt = path.join(parent, '.bootstrap.json');
+  const outside = path.join(fixture.root, 'external-receipt-target');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'sentinel'), 'unchanged');
+  let swapped = false;
+  const replace = () => {
+    if (swapped) return;
+    swapped = true;
+    fs.renameSync(parent, `${parent}-displaced`);
+    fs.symlinkSync(outside, parent);
+  };
+  const open = fs.openSync;
+  t.mock.method(fs, 'openSync', function (file, ...args) {
+    if (file === receipt) replace();
+    return open.call(this, file, ...args);
+  });
+  const childProcess = require('node:child_process');
+  const spawnSync = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', function (command, args, options) {
+    if (args.some(arg => String(arg).endsWith('owned-write.py'))) replace();
+    return spawnSync.call(this, command, args, options);
+  });
+  await assert.rejects(
+    bootstrapRuntime(
+      'handy-gguf-q8',
+      { layout: fixture.layout, lock: fixture.authority },
+      fixture.dependencies
+    ),
+    /changed|symlink/
+  );
+  assert.equal(swapped, true, 'the replacement must occur at the receipt write boundary');
+  assert.deepEqual(fs.readdirSync(outside), ['sentinel']);
+  assert.equal(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8'), 'unchanged');
+});
+
 test('dirty source and changed build output cannot be reused for timing', async t => {
   const fixture = await runtimeFixture(t);
   const options = { layout: fixture.layout, lock: fixture.authority };
