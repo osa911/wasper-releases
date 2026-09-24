@@ -8,7 +8,7 @@ const { canonicalJson } = require('./asr-quality/manifest.cjs');
 const { resolveLayout } = require('./config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./runtime/constants.cjs');
 
-const COMMANDS = new Set(['benchmark', 'recover-corpus', 'smoke', 'clean']);
+const COMMANDS = new Set(['benchmark', 'doctor', 'recover-corpus', 'smoke', 'clean']);
 const LAYOUT_OPTIONS = new Map([
   ['--cache-dir', 'cacheDir'],
   ['--output-dir', 'outputDir'],
@@ -38,7 +38,9 @@ function parseCommandArguments(argv) {
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === '--accept-source-terms' && !options.acceptSourceTerms) {
-      if (command === 'clean') throw new TypeError('clean does not accept --accept-source-terms');
+      if (command === 'clean' || command === 'doctor') {
+        throw new TypeError(`${command} does not accept --accept-source-terms`);
+      }
       options.acceptSourceTerms = true;
       continue;
     }
@@ -173,6 +175,7 @@ async function runCli(
     bootstrapRuntimeImpl,
     cleanImpl,
     createRuntimeAdapterImpl,
+    doctorImpl,
     homeDirectory,
     loadRuntimeLockImpl,
     recoverCorpusImpl,
@@ -181,6 +184,15 @@ async function runCli(
   } = {}
 ) {
   const plan = createCommandPlan(argv, { homeDirectory });
+  if (plan.command === 'doctor') {
+    const doctor = doctorImpl ?? require('./doctor.cjs').doctor;
+    const formatDoctor = require('./doctor.cjs').formatDoctor;
+    const runtimeLock = (loadRuntimeLockImpl ?? require('./runtime/locks.cjs').loadRuntimeLock)();
+    const result = doctor(plan.layout, runtimeLock);
+    stdout.write(`${formatDoctor(result)}\n`);
+    if (!result.ok) throw new Error('doctor found prerequisites that block a full run');
+    return Object.freeze({ command: plan.command, writes: false, ...result });
+  }
   if (plan.command === 'clean') {
     const clean = cleanImpl ?? require('./clean.cjs').clean;
     const removed = await clean(plan.layout, {
