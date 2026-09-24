@@ -674,6 +674,16 @@ function sourceImportRequests(source) {
   const requests = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
+    if (
+      isIdentifier(token, 'module') &&
+      !isPunctuator(tokens[index - 1], '.') &&
+      isPunctuator(tokens[index + 1], '.') &&
+      isIdentifier(tokens[index + 2], 'require')
+    ) {
+      const request = relativeFirstCallArgument(tokens, index + 2);
+      if (request !== null) requests.push(request);
+      continue;
+    }
     if (isIdentifier(token, 'require')) {
       if (isPunctuator(tokens[index - 1], '.')) continue;
       const request = relativeFirstCallArgument(tokens, index);
@@ -737,15 +747,30 @@ function findUnresolvedRelativeImports(file, source, knownFiles) {
   return unresolved;
 }
 
+function appendStaticViolations(violations, findings, limits, category) {
+  for (const finding of findings) {
+    if (violations.length >= limits.maxViolations) {
+      throw new Error(`public audit static ${category} violation limit exceeded before terminal output`);
+    }
+    violations.push(finding);
+  }
+}
+
 function auditPublicPackage(packageRoot, { limits } = {}) {
   if (typeof packageRoot !== 'string' || packageRoot.trim() === '') {
     throw new TypeError('public package root must be a non-empty path');
   }
-  const walked = walkTextFiles(path.resolve(packageRoot), resolveAuditLimits(limits));
+  const resolvedLimits = resolveAuditLimits(limits);
+  const walked = walkTextFiles(path.resolve(packageRoot), resolvedLimits);
   const violations = [...walked.violations];
   for (const { file, source } of walked.files) {
-    violations.push(...findForbiddenText(file, source));
-    violations.push(...findUnresolvedRelativeImports(file, source, walked.knownFiles));
+    appendStaticViolations(violations, findForbiddenText(file, source), resolvedLimits, 'text');
+    appendStaticViolations(
+      violations,
+      findUnresolvedRelativeImports(file, source, walked.knownFiles),
+      resolvedLimits,
+      'import'
+    );
   }
   return violations;
 }

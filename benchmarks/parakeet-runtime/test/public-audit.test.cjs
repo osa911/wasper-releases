@@ -403,6 +403,46 @@ test('fails closed at injected entry, metadata, and violation traversal limits',
   );
 });
 
+test('fails closed before CLI output when static text findings exceed the limit', async t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const values = privateFixtureValues();
+  const writes = [];
+  fs.writeFileSync(
+    path.join(fixturePackage, 'dense-private-references.txt'),
+    [values.privateUserPath, values.privateUserPath, values.privateUserPath].join('\n')
+  );
+
+  await assert.rejects(
+    runCli(['audit-public'], {
+      auditPublicPackageImpl() {
+        return auditPublicPackage(fixturePackage, { limits: { maxViolations: 2 } });
+      },
+      stdout: { write(value) { writes.push(value); } },
+    }),
+    /static text violation limit exceeded before terminal output/
+  );
+
+  assert.deepEqual(writes, []);
+});
+
+test('fails closed when static import findings exceed the limit', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const sourceDirectory = path.join(fixturePackage, 'src');
+  fs.mkdirSync(sourceDirectory);
+  writeSource(sourceDirectory, 'dense-imports.cjs', [
+    'require("./missing-one.cjs");\n',
+    'require("./missing-two.cjs");\n',
+    'module.require("./missing-three.cjs");\n',
+  ]);
+
+  assert.throws(
+    () => auditPublicPackage(fixturePackage, { limits: { maxViolations: 2 } }),
+    /static import violation limit exceeded before terminal output/
+  );
+});
+
 test('rejects a FIFO as a special entry without opening it', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixturePackage = temporaryPackage(t);
@@ -592,6 +632,38 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     `src/esm-side-effect.mjs:${outsideRequest}`,
     `src/template-interpolation.mjs:${outsideRequest}`,
   ].sort());
+});
+
+test('recognizes module.require without treating ordinary property calls as imports', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const sourceDirectory = path.join(fixturePackage, 'src');
+  const missingRequest = './missing.cjs';
+  fs.mkdirSync(sourceDirectory);
+  writeSource(sourceDirectory, 'module-require.cjs', [
+    'module.require(',
+    JSON.stringify(missingRequest),
+    ');\n',
+  ]);
+  writeSource(sourceDirectory, 'ordinary-property-calls.cjs', [
+    'loader.require(',
+    JSON.stringify(missingRequest),
+    ');\n',
+    'loader.import(',
+    JSON.stringify(missingRequest),
+    ');\n',
+    'loader.module.require(',
+    JSON.stringify(missingRequest),
+    ');\n',
+  ]);
+
+  assert.deepEqual(auditPublicPackage(fixturePackage), [
+    {
+      file: 'src/module-require.cjs',
+      type: 'unresolved-relative-import',
+      value: missingRequest,
+    },
+  ]);
 });
 
 test('does not treat import-shaped ordinary strings or templates as source imports', t => {

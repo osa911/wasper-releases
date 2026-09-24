@@ -17,7 +17,7 @@ function projectedIdentity(runIdentity) {
   }
   if (source.hardware && typeof source.hardware === 'object') {
     result.hardware = {};
-    for (const field of ['arch', 'machine', 'platform', 'release']) {
+    for (const field of ['arch', 'platform', 'release']) {
       if (typeof source.hardware[field] === 'string') result.hardware[field] = source.hardware[field];
     }
   }

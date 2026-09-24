@@ -138,6 +138,20 @@ test('public evidence omits transcript and source bytes', () => {
   });
 });
 
+test('public evidence omits the machine identifier', () => {
+  const run = localRunWithText();
+  run.runIdentity.hardware.machine = 'review-fixture-host.example';
+
+  const projection = projectPublicEvidence(run);
+
+  assert.deepEqual(projection.run.hardware, {
+    arch: 'arm64',
+    platform: 'darwin',
+    release: '25.0.0',
+  });
+  assert.equal(JSON.stringify(projection).includes('review-fixture-host.example'), false);
+});
+
 test('public evidence strips numeric metrics from incomplete long workloads', () => {
   const projection = projectPublicEvidence(localRunWithText());
   const long = projection.aggregate.cells['wasper-metal-int8'].workloads.longRobustness;
