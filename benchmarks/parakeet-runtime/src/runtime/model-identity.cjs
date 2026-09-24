@@ -65,6 +65,25 @@ function collectSourceEvidence(value, label) {
   return structuredClone(value);
 }
 
+function collectReleaseIdentity(value) {
+  requirePlainObject(value, 'release');
+  requireNonEmptyString(value.version, 'release.version');
+  if (
+    typeof value.nativeServerSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(value.nativeServerSha256)
+  ) {
+    throw new TypeError('release.nativeServerSha256 must be a SHA-256 digest');
+  }
+  if (!new Set(['published-exact', 'newer-release']).has(value.baselineKind)) {
+    throw new TypeError('release.baselineKind must identify a published or newer release');
+  }
+  return {
+    version: value.version,
+    nativeServerSha256: value.nativeServerSha256,
+    baselineKind: value.baselineKind,
+  };
+}
+
 function collectArtifactFiles(artifactPath, files) {
   requireNonEmptyString(artifactPath, 'model artifact path');
   const resolved = path.resolve(artifactPath);
@@ -111,7 +130,13 @@ function hashArtifact(filePath) {
   };
 }
 
-function collectModelIdentity({ artifacts, executable, packages = [], launchCommand } = {}) {
+function collectModelIdentity({
+  artifacts,
+  executable,
+  packages = [],
+  launchCommand,
+  release,
+} = {}) {
   if (!Array.isArray(artifacts) || artifacts.length === 0) {
     throw new TypeError('model identity requires every consumed artifact');
   }
@@ -166,6 +191,7 @@ function collectModelIdentity({ artifacts, executable, packages = [], launchComm
       return collected;
     }),
     launchCommand: Array.isArray(launchCommand) ? [...launchCommand] : launchCommand,
+    ...(release === undefined ? {} : { release: collectReleaseIdentity(release) }),
   });
 }
 

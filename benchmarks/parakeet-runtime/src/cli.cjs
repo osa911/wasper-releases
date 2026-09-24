@@ -21,6 +21,7 @@ const COMMANDS = new Set([
   'clean',
 ]);
 const OUTPUT_COMMANDS = new Set(['recover-corpus', 'smoke', 'run', 'report']);
+const WASPER_APP_COMMANDS = new Set(['smoke', 'run']);
 const LAYOUT_OPTIONS = new Map([
   ['--cache-dir', 'cacheDir'],
   ['--output-dir', 'outputDir'],
@@ -63,8 +64,9 @@ function parseCommandArguments(argv) {
   if (!OUTPUT_COMMANDS.has(command) && options.output !== null) {
     throw new TypeError(`${command} does not accept --output`);
   }
-  const hasLayoutOption = [...LAYOUT_OPTIONS.values()].some(option => options[option] !== null);
-  if (command !== 'clean' && hasLayoutOption) {
+  const hasStorageOption = options.cacheDir !== null || options.outputDir !== null;
+  const hasUnsupportedWasperApp = options.wasperApp !== null && !WASPER_APP_COMMANDS.has(command);
+  if (command !== 'clean' && (hasStorageOption || hasUnsupportedWasperApp)) {
     throw new TypeError(`${command} does not accept benchmark layout options`);
   }
   return { command, ...options };
@@ -88,9 +90,16 @@ function createCommandPlan(
       writes: false,
     });
   }
+  const layout = WASPER_APP_COMMANDS.has(command)
+    ? resolveLayout({
+        ...(wasperApp === null ? {} : { wasperApp }),
+        ...(homeDirectory === undefined ? {} : { homeDirectory }),
+      })
+    : null;
   return Object.freeze({
     command,
     output: output === null ? null : resolvePrivateOutputPath(output, { repositoryRoot }),
+    ...(layout === null ? {} : { layout }),
     writes: false,
   });
 }
@@ -195,7 +204,7 @@ async function runCli(
       smokeRuntimeAdaptersImpl ?? require('./runtime/smoke.cjs').smokeRuntimeAdapters;
     const smoke = await smokeRuntimeAdapters({
       output: plan.output,
-      repositoryRoot: repositoryRoot ?? path.resolve(__dirname, '..'),
+      layout: plan.layout,
     });
     const result = Object.freeze({ ...plan, writes: true, ...smoke });
     stdout.write(`${JSON.stringify(result)}\n`);
@@ -211,7 +220,8 @@ async function runCli(
       outputRoot: plan.output,
       manifest,
       runIdentity: createHolderRunIdentity(manifest),
-      adapterFactory: runtime => createRuntimeAdapter(runtime.id, { repositoryRoot }),
+      adapterFactory: runtime =>
+        createRuntimeAdapter(runtime.id, { repositoryRoot, layout: plan.layout }),
       preparedLongPath: path.join(plan.output, 'corpus/long/prepared/long-prepared.json'),
     });
     const summary = Object.freeze({

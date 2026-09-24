@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 
+const { resolveLayout } = require('../config.cjs');
 const { createRuntimeAdapter } = require('./adapters/index.cjs');
 const { RUNTIME_DESCRIPTORS } = require('./constants.cjs');
 
@@ -33,14 +34,6 @@ function serializeError(error, phase) {
   return serialized;
 }
 
-function resolvePackagedRepositoryRoot(repositoryRoot) {
-  const executable = 'dist/mac-arm64/Wasper.app/Contents/Resources/bin/wasper-parakeet-server';
-  const candidates = [repositoryRoot, path.resolve(repositoryRoot, '../..')];
-  return (
-    candidates.find(candidate => fs.existsSync(path.join(candidate, executable))) ?? repositoryRoot
-  );
-}
-
 function createEvidence(output, fixture) {
   const createdAt = new Date().toISOString();
   const runId = `smoke-${createdAt.replace(/[^0-9A-Za-z]/gu, '')}-${randomUUID()}`;
@@ -64,8 +57,9 @@ function createEvidence(output, fixture) {
 
 async function smokeRuntimeAdapters({
   output,
-  repositoryRoot = path.resolve(__dirname, '../..'),
-  packagedRepositoryRoot = resolvePackagedRepositoryRoot(repositoryRoot),
+  layout = resolveLayout(),
+  runtimeLock,
+  createRuntimeAdapterImpl = createRuntimeAdapter,
 }) {
   const fixture = smokeFixture(output);
   const { evidence, evidencePath, persist } = createEvidence(output, fixture);
@@ -79,9 +73,9 @@ async function smokeRuntimeAdapters({
     let phase = 'create-adapter';
     let failure = null;
     try {
-      adapter = createRuntimeAdapter(runtime.id, {
-        repositoryRoot,
-        packagedRepositoryRoot,
+      adapter = createRuntimeAdapterImpl(runtime.id, {
+        layout,
+        ...(runtimeLock === undefined ? {} : { runtimeLock }),
       });
       phase = 'start';
       cell.started = await adapter.start();
@@ -142,7 +136,10 @@ async function smokeRuntimeAdapters({
   persist();
   return {
     evidencePath,
-    cells: evidence.cells.map(({ runtimeId, status }) => ({ runtimeId, status })),
+    cells: evidence.cells.map(({ runtimeId, status }) => ({
+      runtimeId,
+      status,
+    })),
   };
 }
 

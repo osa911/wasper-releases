@@ -40,6 +40,7 @@ function createRuntimeAdapter(runtimeId, options = {}) {
     artifacts: definition.modelArtifacts,
     ...collectRuntimeVersionEvidence(definition, options.runtimeVersionOptions),
     launchCommand,
+    ...(definition.release === undefined ? {} : { release: definition.release }),
   };
   const modelIdentityHash = createPrivateModelIdentityEvidence(modelIdentity).identityHash;
   const processClientFactory = options.createProcessClientImpl ?? createProcessClient;
