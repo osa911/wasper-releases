@@ -11,7 +11,7 @@ const NATIVE_SERVER_RELATIVE_PATH = 'Contents/Resources/bin/wasper-parakeet-serv
 const RUNTIME_LOCK_PATH = path.resolve(__dirname, '../../locks/runtimes.json');
 
 function parseVersion(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(version);
   if (!match) throw new Error(`Wasper returned an invalid release version: ${version}`);
   return match.slice(1).map(Number);
 }

@@ -140,6 +140,21 @@ test('rejects a prerelease that is not the published 1.8.0 release', t => {
   );
 });
 
+test('rejects a release version with a leading-zero component', t => {
+  const root = temporaryDirectory(t);
+  const invalidApp = createApp(root, 'Wasper.app', '1.8.00');
+
+  assert.throws(
+    () =>
+      discoverWasperApp({
+        appPath: invalidApp.appPath,
+        runtimeLock: runtimeLock(),
+        ...discoveryDependencies([invalidApp]),
+      }),
+    /invalid release version/
+  );
+});
+
 test('labels a later release as a valid newer run', t => {
   const root = temporaryDirectory(t);
   const newerApp = createApp(root, 'Wasper.app', '1.8.1', {
