@@ -386,6 +386,7 @@ async function runRuntimeBenchmark({
   };
   const schedule = buildRuntimeSchedule({ manifest: hydratedManifest, seed });
   const orderedRuntimeDescriptors = resolveRuntimeOrder(runtimeOrder);
+  const baseRuntimeOrder = orderedRuntimeDescriptors ?? RUNTIME_DESCRIPTORS;
   const fixtures = new Map(
     hydratedManifest.runCorpus.fixtures.map(fixture => [fixture.id, fixture])
   );
@@ -404,7 +405,7 @@ async function runRuntimeBenchmark({
   );
 
   for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
-    for (const cell of orderedRuntimeDescriptors ?? rotate(RUNTIME_DESCRIPTORS, pass - 1)) {
+    for (const cell of rotate(baseRuntimeOrder, pass - 1)) {
       const items = schedule.filter(item => item.pass === pass && item.cellId === cell.id);
       const pending = items.filter(item => !byOrder.has(item.order));
       for (const item of pending.filter(item => fixtures.get(item.fixtureId).unavailable)) {

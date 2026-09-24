@@ -180,3 +180,66 @@ test('runner preserves sequential automatic-language three-pass timing and parti
   assert.equal(fs.existsSync(path.join(run.runDirectory, 'public-evidence.json')), true);
   assert.equal(fs.existsSync(path.join(run.runDirectory, 'report.md')), true);
 });
+
+test('runner rotates a supplied valid runtime order after its first pass', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const runtimeOrder = [
+    'handy-gguf-q8',
+    'nvidia-gguf-q8',
+    'istupakov-onnx-int8',
+    'fluid-coreml-mixed',
+    'wasper-metal-int8',
+    'mlx-fp32',
+    'mlx-int8-local',
+  ];
+
+  await runRuntimeBenchmark({
+    layout,
+    manifest: publicManifest(layout),
+    runIdentity: runIdentity(),
+    adapterFactory: fakeAdapterFactory(events),
+    runtimeOrder,
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  const starts = events.filter(event => event.type === 'start').map(event => event.runtimeId);
+  const passLength = RUNTIME_DESCRIPTORS.length;
+
+  assert.deepEqual(
+    [
+      starts.slice(0, passLength),
+      starts.slice(passLength, passLength * 2),
+      starts.slice(passLength * 2, passLength * 3),
+    ],
+    [
+      [
+        'handy-gguf-q8',
+        'nvidia-gguf-q8',
+        'istupakov-onnx-int8',
+        'fluid-coreml-mixed',
+        'wasper-metal-int8',
+        'mlx-fp32',
+        'mlx-int8-local',
+      ],
+      [
+        'nvidia-gguf-q8',
+        'istupakov-onnx-int8',
+        'fluid-coreml-mixed',
+        'wasper-metal-int8',
+        'mlx-fp32',
+        'mlx-int8-local',
+        'handy-gguf-q8',
+      ],
+      [
+        'istupakov-onnx-int8',
+        'fluid-coreml-mixed',
+        'wasper-metal-int8',
+        'mlx-fp32',
+        'mlx-int8-local',
+        'handy-gguf-q8',
+        'nvidia-gguf-q8',
+      ],
+    ],
+  );
+});
