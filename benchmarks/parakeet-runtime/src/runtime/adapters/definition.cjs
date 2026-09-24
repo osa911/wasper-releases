@@ -1,17 +1,14 @@
 'use strict';
 
-const os = require('node:os');
-const path = require('node:path');
-
 const { AUTOMATIC_LANGUAGE_POLICY } = require('../constants.cjs');
-
-const DEFAULT_HOLDER_ROOT = '/Users/osa911/Models/wasper-parakeet-tdt-v3-bench';
+const { resolveLayout } = require('../../config.cjs');
 
 function roots(options = {}) {
+  const layout = options.layout ?? resolveLayout(options);
   return {
-    repositoryRoot: options.repositoryRoot ?? path.resolve(__dirname, '../../..'),
-    holderRoot: options.holderRoot ?? DEFAULT_HOLDER_ROOT,
-    homeDirectory: options.homeDirectory ?? os.homedir(),
+    repositoryRoot: options.repositoryRoot ?? layout.packageRoot,
+    holderRoot: layout.holdersRoot,
+    homeDirectory: options.homeDirectory ?? layout.homeDirectory,
   };
 }
 
