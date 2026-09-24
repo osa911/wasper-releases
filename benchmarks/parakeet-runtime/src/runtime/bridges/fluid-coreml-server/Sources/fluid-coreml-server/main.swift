@@ -3,9 +3,8 @@ import FluidAudio
 import Foundation
 
 let fluidCoreMLBridgeVersion = "2"
-let fluidAudioSourceHead = "edee7154e66d2196be896580c6c26ff81c2c528e"
-let fluidAudioUncommittedDiffSHA256 = "4cc60500448dafbf7b292a5de456381e8a2ee9223c0e8cbc5137e048aa389a19"
-let fluidAudioSourceVersion = "FluidAudio HEAD \(fluidAudioSourceHead) dirty diff SHA-256 \(fluidAudioUncommittedDiffSHA256)"
+let fluidAudioSourceHead = "69e42dae8ed12a08c9bd6741080dae741d309a09"
+let fluidAudioSourceVersion = "FluidAudio HEAD \(fluidAudioSourceHead) clean"
 
 struct Request: Decodable {
     let requestId: String
@@ -35,8 +34,7 @@ struct RuntimeIdentity: Encodable {
 
 struct FluidAudioSourceIdentity: Encodable {
     let head = fluidAudioSourceHead
-    let state = "dirty"
-    let uncommittedDiffSha256 = fluidAudioUncommittedDiffSHA256
+    let state = "clean"
 }
 
 func writeResponse(_ response: Response) {

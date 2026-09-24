@@ -1,45 +1,32 @@
 'use strict';
 
 const path = require('node:path');
-
 const { resolveLayout } = require('../../config.cjs');
 const { discoverWasperApp } = require('../wasper-app.cjs');
-const { frozenDefinition } = require('./definition.cjs');
+const { loadRuntimeLock } = require('../locks.cjs');
+const { frozenDefinition, resolveLockedDefinition } = require('./definition.cjs');
 
 function resolveWasperMetalDefinition(options = {}) {
   const layout = options.layout ?? resolveLayout(options);
-  const discoverWasperAppImpl = options.discoverWasperAppImpl ?? discoverWasperApp;
-  const release = discoverWasperAppImpl({
+  const lock = options.lock ?? options.runtimeLock ?? loadRuntimeLock(options.runtimeLockPath);
+  const release = (options.discoverWasperAppImpl ?? discoverWasperApp)({
     ...(layout.wasperAppPath == null && layout.wasperApp == null
       ? {}
       : { appPath: layout.wasperAppPath ?? layout.wasperApp }),
-    ...(options.runtimeLock === undefined ? {} : { runtimeLock: options.runtimeLock }),
-    ...(options.runtimeLockPath === undefined ? {} : { runtimeLockPath: options.runtimeLockPath }),
+    runtimeLock: lock,
     ...(options.discoveryOptions ?? {}),
   });
-  const frozenRelease = Object.freeze({ ...release });
-  const modelPath = path.join(layout.artifactsRoot, 'wasper-metal-int8');
+  const definition = resolveLockedDefinition('wasper-metal-int8', {
+    ...options,
+    layout,
+    lock,
+    wasperRelease: release,
+  });
   return frozenDefinition({
-    id: 'wasper-metal-int8',
-    command: release.nativeServerPath,
-    args: ['--port', '19381', '--model-dir', modelPath, '--encoder-backend', 'metal'],
-    env: { WASPER_PARAKEET_INT8: '1', WASPER_PARAKEET_FP16: '0' },
-    transport: {
-      kind: 'http',
-      port: 19381,
-      healthPath: '/health',
-      transcribePath: '/transcribe',
-      fileField: 'audio',
-      formFields: { language: 'auto', language_detection: 'skip' },
-    },
-    modelPath,
-    modelArtifacts: [modelPath],
-    modelIdentity: 'wasper-parakeet-metal-int8',
-    quantization: { label: 'int8', bits: 8 },
-    release: frozenRelease,
+    ...definition,
+    release: Object.freeze({ ...release }),
     runtime: {
-      name: 'Wasper wasper-parakeet-server',
-      backend: 'Metal encoder + ONNX Runtime',
+      ...definition.runtime,
       release: {
         version: release.version,
         nativeServerSha256: release.nativeServerSha256,

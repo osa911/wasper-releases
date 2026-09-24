@@ -11,6 +11,9 @@ const { resolveNvidiaGgufDefinition } = require('./nvidia-gguf.cjs');
 const { createProcessClient } = require('./process-client.cjs');
 const { resolveWasperMetalDefinition } = require('./wasper-metal.cjs');
 const { mergeOverlappingTranscripts } = require('../long-audio-chunking.cjs');
+const { resolveLayout } = require('../../config.cjs');
+const { loadRuntimeLock } = require('../locks.cjs');
+const { verifyRuntimeInstallation } = require('../bootstrap.cjs');
 
 function resolveRuntimeAdapterDefinition(runtimeId, options = {}) {
   switch (runtimeId) {
@@ -33,6 +36,16 @@ function resolveRuntimeAdapterDefinition(runtimeId, options = {}) {
 }
 
 function createRuntimeAdapter(runtimeId, options = {}) {
+  const installationOptions = {
+    layout: options.layout ?? resolveLayout(options),
+    lock: options.lock ?? options.runtimeLock ?? loadRuntimeLock(),
+    python: options.python ?? 'python3',
+  };
+  const verify = () =>
+    verifyRuntimeInstallation(runtimeId, installationOptions, {
+      authority: options.lockAuthority,
+    });
+  verify();
   const definition = resolveRuntimeAdapterDefinition(runtimeId, options);
   const privateRuntimeEvidence = definition.collectPrivateRuntimeEvidence?.();
   const launchCommand = [definition.command, ...definition.args];
@@ -49,6 +62,7 @@ function createRuntimeAdapter(runtimeId, options = {}) {
   const operations = {
     launchCommand,
     async start() {
+      verify();
       client = processClientFactory({ definition, modelIdentityHash });
       return client.start();
     },
@@ -59,7 +73,9 @@ function createRuntimeAdapter(runtimeId, options = {}) {
       return client.request('warmup', { audioPath: fixture.audioPath });
     },
     async transcribe({ fixture }) {
-      const audioPaths = fixture.audioChunks?.map(chunk => chunk.audioPath) ?? [fixture.audioPath];
+      const audioPaths = fixture.audioChunks?.map(chunk => chunk.audioPath) ?? [
+        fixture.audioPath,
+      ];
       const responses = [];
       for (const audioPath of audioPaths) {
         responses.push(await client.request('transcribe', { audioPath }));

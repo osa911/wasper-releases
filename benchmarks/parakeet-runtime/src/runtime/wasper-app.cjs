@@ -25,7 +25,8 @@ function compareVersions(left, right) {
 
 function hashFileSha256(filePath) {
   const info = fs.statSync(filePath);
-  if (!info.isFile()) throw new Error(`packaged native server is not a regular file: ${filePath}`);
+  if (!info.isFile())
+    throw new Error(`packaged native server is not a regular file: ${filePath}`);
   const hash = crypto.createHash('sha256');
   const buffer = Buffer.allocUnsafe(8 * 1024 * 1024);
   const descriptor = fs.openSync(filePath, 'r');
@@ -51,7 +52,7 @@ function hashFileSha256(filePath) {
 
 function readRuntimeLock(lockPath = RUNTIME_LOCK_PATH) {
   try {
-    return JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    return require('./locks.cjs').loadRuntimeLock(lockPath);
   } catch (error) {
     throw new Error(`cannot read Wasper runtime lock at ${lockPath}`, {
       cause: error,
@@ -60,7 +61,9 @@ function readRuntimeLock(lockPath = RUNTIME_LOCK_PATH) {
 }
 
 function expectedWasperNativeServerSha256(runtimeLock) {
-  const descriptor = runtimeLock?.runtimes?.find(runtime => runtime?.id === 'wasper-metal-int8');
+  const descriptor = runtimeLock?.runtimes?.find(
+    runtime => runtime?.id === 'wasper-metal-int8'
+  );
   const release = descriptor?.release;
   if (
     release?.version !== '1.8.0' ||
