@@ -145,7 +145,7 @@ test('rejects a disk shortage without creating benchmark artifacts', t => {
   assert.equal(fs.existsSync(layout.outputRoot), false);
 });
 
-test('reports an unavailable exact public-audit Python executable', t => {
+test('blocks the public audit when the exact descriptor capability probe fails', t => {
   const layout = temporaryLayout(t);
 
   const result = doctor(
@@ -191,12 +191,12 @@ test('probes the exact public-audit Python executable instead of PATH python3', 
     })
   );
 
-  assert.deepEqual(probes, [
-    {
-      executable: '/opt/public-audit-python',
-      arguments_: ['-I', '-S', '-B', '-c', 'import os; assert os.open in os.supports_dir_fd'],
-    },
-  ]);
+  assert.equal(probes.length, 1);
+  assert.equal(probes[0].executable, '/opt/public-audit-python');
+  assert.deepEqual(probes[0].arguments_.slice(0, 4), ['-I', '-S', '-B', '-c']);
+  assert.match(probes[0].arguments_[4], /os\.scandir/u);
+  assert.match(probes[0].arguments_[4], /os\.readlink/u);
+  assert.match(probes[0].arguments_[4], /follow_symlinks=False/u);
   assert.equal(check(result, 'public-audit-python').state, 'ready');
   assert.equal(check(result, 'public-audit-python').detail, '/opt/public-audit-python');
   assert.equal(fs.existsSync(layout.cacheRoot), false);

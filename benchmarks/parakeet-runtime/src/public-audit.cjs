@@ -59,19 +59,58 @@ const REGULAR_EXPRESSION_PRECEDERS = new Set([
 const SYMLINK_TARGET_REDACTION = '[redacted symlink target]';
 const MAX_AUDIT_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_AUDIT_TOTAL_BYTES = 8 * 1024 * 1024;
-const MAX_AUDIT_HELPER_OUTPUT_BYTES = 2 * MAX_AUDIT_TOTAL_BYTES + 1024 * 1024;
+const MAX_AUDIT_ENTRY_COUNT = 50_000;
+const MAX_AUDIT_METADATA_BYTES = 8 * 1024 * 1024;
+const MAX_AUDIT_VIOLATIONS = 10_000;
+const MAX_AUDIT_HELPER_OUTPUT_BYTES = 32 * 1024 * 1024;
+const DEFAULT_AUDIT_LIMITS = Object.freeze({
+  maxEntries: MAX_AUDIT_ENTRY_COUNT,
+  maxFileBytes: MAX_AUDIT_FILE_BYTES,
+  maxMetadataBytes: MAX_AUDIT_METADATA_BYTES,
+  maxTotalBytes: MAX_AUDIT_TOTAL_BYTES,
+  maxViolations: MAX_AUDIT_VIOLATIONS,
+});
 const AUDIT_PYTHON_ENV = Object.freeze({
   LANG: 'C',
   LC_ALL: 'C',
   PATH: '/usr/bin:/bin',
   PYTHONHASHSEED: '0',
 });
+const AUDIT_PYTHON_PROBE = String.raw`
+import os
+import stat
+
+assert hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'O_DIRECTORY')
+assert os.open in os.supports_dir_fd
+assert os.stat in os.supports_dir_fd
+assert os.stat in os.supports_follow_symlinks
+assert os.readlink in os.supports_dir_fd
+assert os.scandir in os.supports_fd
+
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+descriptor = os.open('/', flags)
+try:
+    assert stat.S_ISDIR(os.fstat(descriptor).st_mode)
+    with os.scandir(descriptor) as entries:
+        next(entries, None)
+    os.stat('.', dir_fd=descriptor, follow_symlinks=False)
+    try:
+        os.readlink('.', dir_fd=descriptor)
+    except OSError:
+        pass
+    else:
+        raise AssertionError('readlink unexpectedly followed a non-link')
+    child_descriptor = os.open('.', flags, dir_fd=descriptor)
+    os.close(child_descriptor)
+finally:
+    os.close(descriptor)
+`;
 const AUDIT_PYTHON_PROBE_ARGUMENTS = Object.freeze([
   '-I',
   '-S',
   '-B',
   '-c',
-  'import os; assert os.open in os.supports_dir_fd',
+  AUDIT_PYTHON_PROBE,
 ]);
 
 function publicAuditPythonExecutable(platform = process.platform) {
@@ -82,7 +121,24 @@ function publicAuditPythonProbeArguments() {
   return [...AUDIT_PYTHON_PROBE_ARGUMENTS];
 }
 
-const PINNED_DIRECTORY_WALKER = String.raw`
+function resolveAuditLimits(overrides = undefined) {
+  if (overrides === undefined) return DEFAULT_AUDIT_LIMITS;
+  if (overrides === null || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new TypeError('public audit limits must be an object');
+  }
+  const limits = { ...DEFAULT_AUDIT_LIMITS };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!(key in limits)) throw new TypeError(`public audit does not support the ${key} limit`);
+    if (!Number.isSafeInteger(value) || value < 1 || value > DEFAULT_AUDIT_LIMITS[key]) {
+      throw new RangeError(`public audit ${key} limit must be a safe positive integer`);
+    }
+    limits[key] = value;
+  }
+  return Object.freeze(limits);
+}
+
+function pinnedDirectoryWalker(limits) {
+  return String.raw`
 import base64
 import json
 import os
@@ -90,11 +146,22 @@ import stat
 import sys
 
 EXCLUDED_DIRECTORY_NAMES = {'.git', 'node_modules'}
-MAX_AUDIT_FILE_BYTES = ${MAX_AUDIT_FILE_BYTES}
-MAX_AUDIT_TOTAL_BYTES = ${MAX_AUDIT_TOTAL_BYTES}
+MAX_AUDIT_ENTRY_COUNT = ${limits.maxEntries}
+MAX_AUDIT_FILE_BYTES = ${limits.maxFileBytes}
+MAX_AUDIT_METADATA_BYTES = ${limits.maxMetadataBytes}
+MAX_AUDIT_TOTAL_BYTES = ${limits.maxTotalBytes}
+MAX_AUDIT_VIOLATIONS = ${limits.maxViolations}
 SYMLINK_TARGET_REDACTION = '${SYMLINK_TARGET_REDACTION}'
 
-if not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'O_DIRECTORY'):
+if (
+    not hasattr(os, 'O_NOFOLLOW')
+    or not hasattr(os, 'O_DIRECTORY')
+    or os.open not in os.supports_dir_fd
+    or os.stat not in os.supports_dir_fd
+    or os.stat not in os.supports_follow_symlinks
+    or os.readlink not in os.supports_dir_fd
+    or os.scandir not in os.supports_fd
+):
     print(json.dumps({'error': 'no-follow descriptor support is unavailable'}))
     sys.exit(0)
 
@@ -106,11 +173,31 @@ if hasattr(os, 'O_CLOEXEC'):
 
 files = []
 violations = []
+entry_count = 0
+metadata_bytes = 0
 total_regular_bytes = 0
 
 def fail(message):
     print(json.dumps({'error': message}))
     sys.exit(0)
+
+def record_entry(logical_path):
+    global entry_count, metadata_bytes
+    entry_count += 1
+    if entry_count > MAX_AUDIT_ENTRY_COUNT:
+        fail('public audit entry limit exceeded before serializing directory entries')
+    metadata_bytes += len(logical_path.encode('utf-8', 'surrogateescape')) + 96
+    if metadata_bytes > MAX_AUDIT_METADATA_BYTES:
+        fail('public audit metadata limit exceeded before serializing directory entries')
+
+def record_violation(logical_path, violation_type, value):
+    if len(violations) >= MAX_AUDIT_VIOLATIONS:
+        fail('public audit violation limit exceeded before serializing violations')
+    violations.append({
+        'file': logical_path,
+        'type': violation_type,
+        'value': value,
+    })
 
 def classify_entry(parent_descriptor, name):
     try:
@@ -178,34 +265,35 @@ def walk_directory(parent_descriptor, name, logical_path, parts):
 def walk(directory_descriptor, parts):
     global total_regular_bytes
     try:
-        names = sorted(os.listdir(directory_descriptor))
+        entries = os.scandir(directory_descriptor)
     except OSError:
         fail('could not enumerate a pinned directory')
-    for name in names:
-        logical_path = '/'.join(parts + [name])
-        metadata = classify_entry(directory_descriptor, name)
-        if stat.S_ISLNK(metadata.st_mode):
-            violations.append({
-                'file': logical_path,
-                'type': 'symlink-entry',
-                'value': SYMLINK_TARGET_REDACTION,
-            })
-        elif stat.S_ISDIR(metadata.st_mode):
-            if name not in EXCLUDED_DIRECTORY_NAMES:
-                walk_directory(directory_descriptor, name, logical_path, parts + [name])
-        elif stat.S_ISREG(metadata.st_mode):
-            if metadata.st_size > MAX_AUDIT_FILE_BYTES:
-                fail('public audit per-file limit exceeded before reading a regular file')
-            if total_regular_bytes + metadata.st_size > MAX_AUDIT_TOTAL_BYTES:
-                fail('public audit aggregate limit exceeded before reading regular files')
-            total_regular_bytes += metadata.st_size
-            record_regular_file(directory_descriptor, name, logical_path, metadata.st_size)
-        else:
-            violations.append({
-                'file': logical_path,
-                'type': 'special-entry',
-                'value': special_kind(metadata.st_mode),
-            })
+    try:
+        for entry in entries:
+            name = entry.name
+            if not isinstance(name, str):
+                fail('could not safely enumerate a directory entry name')
+            logical_path = '/'.join(parts + [name])
+            record_entry(logical_path)
+            metadata = classify_entry(directory_descriptor, name)
+            if stat.S_ISLNK(metadata.st_mode):
+                record_violation(logical_path, 'symlink-entry', SYMLINK_TARGET_REDACTION)
+            elif stat.S_ISDIR(metadata.st_mode):
+                if name not in EXCLUDED_DIRECTORY_NAMES:
+                    walk_directory(directory_descriptor, name, logical_path, parts + [name])
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_size > MAX_AUDIT_FILE_BYTES:
+                    fail('public audit per-file limit exceeded before reading a regular file')
+                if total_regular_bytes + metadata.st_size > MAX_AUDIT_TOTAL_BYTES:
+                    fail('public audit aggregate limit exceeded before reading regular files')
+                total_regular_bytes += metadata.st_size
+                record_regular_file(directory_descriptor, name, logical_path, metadata.st_size)
+            else:
+                record_violation(logical_path, 'special-entry', special_kind(metadata.st_mode))
+    except OSError:
+        fail('could not enumerate a pinned directory')
+    finally:
+        entries.close()
 
 try:
     root_descriptor = 3
@@ -216,6 +304,7 @@ try:
 except OSError:
     fail('could not safely walk the public package')
 `;
+}
 
 function decodeTextBytes(bytes) {
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString('utf16le');
@@ -255,12 +344,12 @@ function rootSymlinkViolation(root) {
   };
 }
 
-function runPinnedDirectoryWalker(rootDescriptor) {
+function runPinnedDirectoryWalker(rootDescriptor, limits) {
   const executable = publicAuditPythonExecutable();
   if (typeof executable !== 'string' || !path.isAbsolute(executable)) {
     throw new Error('public audit requires an absolute system Python executable');
   }
-  const result = spawnSync(executable, ['-I', '-S', '-B', '-c', PINNED_DIRECTORY_WALKER], {
+  const result = spawnSync(executable, ['-I', '-S', '-B', '-c', pinnedDirectoryWalker(limits)], {
     cwd: '/',
     encoding: 'utf8',
     env: AUDIT_PYTHON_ENV,
@@ -290,7 +379,7 @@ function runPinnedDirectoryWalker(rootDescriptor) {
   return response;
 }
 
-function walkTextFiles(root) {
+function walkTextFiles(root, limits) {
   let rootDescriptor;
   try {
     rootDescriptor = fs.openSync(root, noFollowDirectoryFlags());
@@ -303,7 +392,10 @@ function walkTextFiles(root) {
     if (!fs.fstatSync(rootDescriptor).isDirectory()) {
       throw new TypeError('public package root must be a directory');
     }
-    const walked = runPinnedDirectoryWalker(rootDescriptor);
+    const walked = runPinnedDirectoryWalker(rootDescriptor, limits);
+    if (walked.violations.length > limits.maxViolations) {
+      throw new Error('public audit descriptor traversal exceeded its violation limit');
+    }
     const knownFiles = new Set();
     const files = [];
     let totalBytes = 0;
@@ -312,13 +404,13 @@ function walkTextFiles(root) {
         typeof record?.file !== 'string' ||
         !Number.isSafeInteger(record.size) ||
         record.size < 0 ||
-        record.size > MAX_AUDIT_FILE_BYTES ||
+        record.size > limits.maxFileBytes ||
         (record.binary !== true && typeof record.bytes !== 'string')
       ) {
         throw new Error('public audit descriptor traversal returned an invalid file record');
       }
       totalBytes += record.size;
-      if (totalBytes > MAX_AUDIT_TOTAL_BYTES) {
+      if (totalBytes > limits.maxTotalBytes) {
         throw new Error('public audit descriptor traversal exceeded its aggregate limit');
       }
       knownFiles.add(record.file);
@@ -445,20 +537,49 @@ function literalStringValue(source, start, end) {
   return literal.slice(1, -1).replace(/\\(['"\\])/gu, '$1');
 }
 
-function lexSourceTokens(source) {
+function lexTemplateLiteral(source, start) {
+  const tokens = [];
+  let index = start + 1;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character === '`') return { end: index + 1, tokens };
+    if (character === '$' && source[index + 1] === '{') {
+      const expression = lexSourceRange(source, index + 2, true);
+      tokens.push(...expression.tokens);
+      index = expression.index;
+      continue;
+    }
+    index += 1;
+  }
+  return { end: source.length, tokens };
+}
+
+function lexSourceRange(source, start = 0, stopAtInterpolationEnd = false) {
   const tokens = [];
   let expectsExpression = true;
-  for (let index = 0; index < source.length; ) {
+  let interpolationDepth = 0;
+  for (let index = start; index < source.length; ) {
     const character = source[index];
     const next = source[index + 1];
     if (/\s/u.test(character)) {
       index += 1;
       continue;
     }
-    if (character === "'" || character === '"' || character === '`') {
+    if (character === '`') {
+      const template = lexTemplateLiteral(source, index);
+      tokens.push({ type: 'template' });
+      tokens.push(...template.tokens);
+      index = template.end;
+      expectsExpression = false;
+      continue;
+    }
+    if (character === "'" || character === '"') {
       const end = copyQuotedLiteral(source, index);
-      if (character === '`') tokens.push({ type: 'template', value: source.slice(index, end) });
-      else tokens.push({ type: 'string', value: literalStringValue(source, index, end) });
+      tokens.push({ type: 'string', value: literalStringValue(source, index, end) });
       index = end;
       expectsExpression = false;
       continue;
@@ -497,15 +618,24 @@ function lexSourceTokens(source) {
       expectsExpression = false;
       continue;
     }
+    if (stopAtInterpolationEnd && character === '}' && interpolationDepth === 0) {
+      return { index: index + 1, tokens };
+    }
     tokens.push({ type: 'punctuator', value: character });
     index += 1;
+    if (stopAtInterpolationEnd && character === '{') interpolationDepth += 1;
+    if (stopAtInterpolationEnd && character === '}') interpolationDepth -= 1;
     if (character === ')' || character === ']' || character === '}') {
       expectsExpression = false;
     } else if (character !== '.') {
       expectsExpression = true;
     }
   }
-  return tokens;
+  return { index: source.length, tokens };
+}
+
+function lexSourceTokens(source) {
+  return lexSourceRange(source).tokens;
 }
 
 function isIdentifier(token, value) {
@@ -520,6 +650,11 @@ function relativeStringValue(token) {
   return token?.type === 'string' && typeof token.value === 'string' && token.value.startsWith('.')
     ? token.value
     : null;
+}
+
+function relativeFirstCallArgument(tokens, index) {
+  if (!isPunctuator(tokens[index + 1], '(')) return null;
+  return relativeStringValue(tokens[index + 2]);
 }
 
 function closingPunctuator(tokens, start, opening, closing) {
@@ -541,16 +676,15 @@ function sourceImportRequests(source) {
     const token = tokens[index];
     if (isIdentifier(token, 'require')) {
       if (isPunctuator(tokens[index - 1], '.')) continue;
-      if (isPunctuator(tokens[index + 1], '(') && isPunctuator(tokens[index + 3], ')')) {
-        const request = relativeStringValue(tokens[index + 2]);
-        if (request !== null) requests.push(request);
-      }
+      const request = relativeFirstCallArgument(tokens, index);
+      if (request !== null) requests.push(request);
       continue;
     }
     if (isIdentifier(token, 'import')) {
-      if (isPunctuator(tokens[index + 1], '(') && isPunctuator(tokens[index + 3], ')')) {
-        const request = relativeStringValue(tokens[index + 2]);
-        if (request !== null) requests.push(request);
+      if (isPunctuator(tokens[index - 1], '.')) continue;
+      const request = relativeFirstCallArgument(tokens, index);
+      if (request !== null) {
+        requests.push(request);
         continue;
       }
       const sideEffectRequest = relativeStringValue(tokens[index + 1]);
@@ -559,7 +693,7 @@ function sourceImportRequests(source) {
         continue;
       }
       for (let next = index + 1; next + 1 < tokens.length; next += 1) {
-        if (isPunctuator(tokens[next], ';')) break;
+        if (isPunctuator(tokens[next], ';') || tokens[next].type === 'template') break;
         if (isIdentifier(tokens[next], 'from')) {
           const request = relativeStringValue(tokens[next + 1]);
           if (request !== null) requests.push(request);
@@ -603,11 +737,11 @@ function findUnresolvedRelativeImports(file, source, knownFiles) {
   return unresolved;
 }
 
-function auditPublicPackage(packageRoot) {
+function auditPublicPackage(packageRoot, { limits } = {}) {
   if (typeof packageRoot !== 'string' || packageRoot.trim() === '') {
     throw new TypeError('public package root must be a non-empty path');
   }
-  const walked = walkTextFiles(path.resolve(packageRoot));
+  const walked = walkTextFiles(path.resolve(packageRoot), resolveAuditLimits(limits));
   const violations = [...walked.violations];
   for (const { file, source } of walked.files) {
     violations.push(...findForbiddenText(file, source));
@@ -616,8 +750,14 @@ function auditPublicPackage(packageRoot) {
   return violations;
 }
 
+function escapeTerminalControls(value) {
+  return String(value).replace(/[\u0000-\u001f\u007f-\u009f]/gu, character =>
+    `\\u${character.codePointAt(0).toString(16).padStart(4, '0')}`
+  );
+}
+
 function formatPublicAuditViolation({ file, type, value }) {
-  return `${file}: ${type}: ${value}`;
+  return `${escapeTerminalControls(file)}: ${escapeTerminalControls(type)}: ${escapeTerminalControls(value)}`;
 }
 
 module.exports = {

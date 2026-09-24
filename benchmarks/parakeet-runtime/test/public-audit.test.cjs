@@ -8,6 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { runCli } = require('../src/cli.cjs');
+const { formatPublicAuditViolation } = require('../src/public-audit.cjs');
 
 const packageRoot = path.resolve(__dirname, '..');
 
@@ -374,6 +375,34 @@ test('rejects regular files that exceed the public audit aggregate limit', t => 
   );
 });
 
+test('fails closed at injected entry, metadata, and violation traversal limits', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+
+  const entryLimitedPackage = temporaryPackage(t);
+  for (let index = 0; index < 4; index += 1) {
+    fs.writeFileSync(path.join(entryLimitedPackage, `entry-${index}.txt`), '');
+  }
+  assert.throws(
+    () => auditPublicPackage(entryLimitedPackage, { limits: { maxEntries: 3 } }),
+    /entry limit exceeded/
+  );
+
+  const metadataLimitedPackage = temporaryPackage(t);
+  fs.writeFileSync(path.join(metadataLimitedPackage, 'metadata.txt'), '');
+  assert.throws(
+    () => auditPublicPackage(metadataLimitedPackage, { limits: { maxMetadataBytes: 1 } }),
+    /metadata limit exceeded/
+  );
+
+  const violationsLimitedPackage = temporaryPackage(t);
+  fs.symlinkSync('one-target', path.join(violationsLimitedPackage, 'first-link'));
+  fs.symlinkSync('two-target', path.join(violationsLimitedPackage, 'second-link'));
+  assert.throws(
+    () => auditPublicPackage(violationsLimitedPackage, { limits: { maxViolations: 1 } }),
+    /violation limit exceeded/
+  );
+});
+
 test('rejects a FIFO as a special entry without opening it', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixturePackage = temporaryPackage(t);
@@ -393,6 +422,61 @@ test('rejects a FIFO as a special entry without opening it', t => {
       file: 'notes/blocked.fifo',
       type: 'special-entry',
       value: 'fifo',
+    },
+  ]);
+});
+
+test('the external walker reports a symlink to a FIFO before touching its target', t => {
+  const fixturePackage = temporaryPackage(t);
+  const notesDirectory = path.join(fixturePackage, 'notes');
+  const fifo = path.join(path.dirname(fixturePackage), 'blocked.fifo');
+  fs.mkdirSync(notesDirectory);
+  const created = spawnSync('/usr/bin/mkfifo', [fifo], { encoding: 'utf8' });
+  if (created.error || created.status !== 0) {
+    t.skip('mkfifo is unavailable on this platform');
+    return;
+  }
+  fs.symlinkSync(fifo, path.join(notesDirectory, 'fifo-link'));
+
+  const auditModule = path.join(packageRoot, 'src/public-audit.cjs');
+  const auditScript = [
+    "const { auditPublicPackage } = require(process.argv[1]);",
+    'process.stdout.write(JSON.stringify(auditPublicPackage(process.argv[2])));',
+  ].join(' ');
+  const supervisorScript = String.raw`
+    const { spawn } = require('node:child_process');
+    const [auditModule, fixturePackage] = process.argv.slice(1);
+    const worker = spawn(process.execPath, ['-e', ${JSON.stringify(auditScript)}, auditModule, fixturePackage], {
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    worker.stdout.on('data', chunk => { stdout += chunk; });
+    worker.stderr.on('data', chunk => { stderr += chunk; });
+    const timer = setTimeout(() => {
+      try { process.kill(-worker.pid, 'SIGKILL'); } catch {}
+      process.stdout.write(JSON.stringify({ timedOut: true, stdout, stderr }));
+    }, 1000);
+    worker.on('close', (status, signal) => {
+      clearTimeout(timer);
+      process.stdout.write(JSON.stringify({ timedOut: false, status, signal, stdout, stderr }));
+    });
+  `;
+  const result = spawnSync(process.execPath, ['-e', supervisorScript, auditModule, fixturePackage], {
+    encoding: 'utf8',
+    timeout: 3000,
+  });
+
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout);
+  assert.equal(observed.timedOut, false, observed.stderr);
+  assert.deepEqual(JSON.parse(observed.stdout), [
+    {
+      file: 'notes/fifo-link',
+      type: 'symlink-entry',
+      value: '[redacted symlink target]',
     },
   ]);
 });
@@ -438,6 +522,21 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     JSON.stringify(outsideRequest),
     ');\n',
   ]);
+  writeSource(sourceDirectory, 'esm-dynamic-options.mjs', [
+    'import(',
+    JSON.stringify(outsideRequest),
+    ', { with: { type: "json" } });\n',
+  ]);
+  writeSource(sourceDirectory, 'template-interpolation.mjs', [
+    'const imported = `${require(',
+    JSON.stringify(outsideRequest),
+    ')}`;\n',
+  ]);
+  writeSource(sourceDirectory, 'member-import.mjs', [
+    'loader.import(',
+    JSON.stringify(outsideRequest),
+    ');\n',
+  ]);
   writeSource(sourceDirectory, 'esm-re-export.mjs', [
     'export { dependency } from ',
     JSON.stringify(outsideRequest),
@@ -480,6 +579,7 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     `src/commonjs-spaced.cjs:${outsideRequest}`,
     `src/esm-default.mjs:${outsideRequest}`,
     `src/esm-dynamic.mjs:${outsideRequest}`,
+    `src/esm-dynamic-options.mjs:${outsideRequest}`,
     `src/esm-dynamic-spaced.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
@@ -490,6 +590,7 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideTypeRequest}`,
     `src/esm-side-effect.mjs:${outsideRequest}`,
+    `src/template-interpolation.mjs:${outsideRequest}`,
   ].sort());
 });
 
@@ -516,6 +617,17 @@ test('does not treat import-shaped ordinary strings or templates as source impor
   ]);
 
   assert.deepEqual(auditPublicPackage(fixturePackage), []);
+});
+
+test('escapes terminal control characters in public-audit files and values', () => {
+  assert.equal(
+    formatPublicAuditViolation({
+      file: 'notes/link\u001b]0;unsafe\u0007',
+      type: 'symlink-entry',
+      value: 'target\u009b31m',
+    }),
+    'notes/link\\u001b]0;unsafe\\u0007: symlink-entry: target\\u009b31m'
+  );
 });
 
 test('the audit-public command prints every violation and exits nonzero', async () => {
@@ -551,9 +663,10 @@ test('the benchmark executable prints a real fixture violation and exits nonzero
     },
   });
   const notesDirectory = path.join(fixturePackage, 'notes');
+  const controlCharacterLinkName = 'private-\u001b]0;unsafe\u0007-link';
   fs.mkdirSync(notesDirectory);
   fs.writeFileSync(path.join(notesDirectory, 'private.txt'), values.privateUserPath);
-  fs.symlinkSync(values.privateUserPath, path.join(notesDirectory, 'private-link'));
+  fs.symlinkSync(values.privateUserPath, path.join(notesDirectory, controlCharacterLinkName));
 
   const result = spawnSync(process.execPath, [path.join(fixturePackage, 'bin/benchmark.cjs'), 'audit-public'], {
     encoding: 'utf8',
@@ -561,7 +674,11 @@ test('the benchmark executable prints a real fixture violation and exits nonzero
 
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, new RegExp(`notes/private\\.txt: private-user-path: ${values.privateUserPath}`));
-  assert.match(result.stdout, /notes\/private-link: symlink-entry: \[redacted symlink target\]/);
+  assert.match(
+    result.stdout,
+    /notes\/private-\\u001b]0;unsafe\\u0007-link: symlink-entry: \[redacted symlink target\]/
+  );
+  assert.doesNotMatch(result.stdout, /\u001b/u);
   assert.doesNotMatch(result.stdout, new RegExp(`symlink-entry: ${values.privateUserPath}`));
   assert.match(result.stderr, /public package audit found 2 violation\(s\)/);
 });
