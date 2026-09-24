@@ -51,6 +51,74 @@ function writeSource(directory, fileName, fragments) {
   fs.writeFileSync(path.join(directory, fileName), fragments.join(''));
 }
 
+function withoutSymlinkTargetIo(paths, operation) {
+  const blocked = new Set(paths.map(candidate => path.resolve(candidate)));
+  const methods = ['realpathSync', 'statSync', 'readFileSync', 'readdirSync'];
+  const originals = Object.fromEntries(methods.map(method => [method, fs[method]]));
+  for (const method of methods) {
+    const guardedFilesystemMethod = function guardedFilesystemMethod(...arguments_) {
+      const candidate = arguments_[0];
+      if (typeof candidate === 'string' && blocked.has(path.resolve(candidate))) {
+        throw new Error(`unsafe ${method} on symlink path or target: ${candidate}`);
+      }
+      return originals[method].apply(this, arguments_);
+    };
+    if (method === 'realpathSync') {
+      guardedFilesystemMethod.native = function guardedNativeRealpath(...arguments_) {
+        return guardedFilesystemMethod(...arguments_);
+      };
+    }
+    fs[method] = guardedFilesystemMethod;
+  }
+  try {
+    return operation();
+  } finally {
+    for (const method of methods) fs[method] = originals[method];
+  }
+}
+
+function symlinkFixture(t) {
+  const fixturePackage = temporaryPackage(t);
+  const values = privateFixtureValues();
+  const notesDirectory = path.join(fixturePackage, 'notes');
+  const excludedDirectory = path.join(fixturePackage, 'node_modules');
+  const outsideDirectory = path.join(path.dirname(fixturePackage), 'outside');
+  const containedFileTarget = path.join(excludedDirectory, 'contained-file.txt');
+  const containedDirectoryTarget = path.join(excludedDirectory, 'contained-directory');
+  const outsideFileTarget = path.join(outsideDirectory, 'outside-file.txt');
+  const outsideDirectoryTarget = path.join(outsideDirectory, 'outside-directory');
+  fs.mkdirSync(notesDirectory);
+  fs.mkdirSync(containedDirectoryTarget, { recursive: true });
+  fs.mkdirSync(outsideDirectoryTarget, { recursive: true });
+  fs.writeFileSync(containedFileTarget, values.privateGitControlPath);
+  fs.writeFileSync(path.join(containedDirectoryTarget, 'private.txt'), values.privateUserPath);
+  fs.writeFileSync(outsideFileTarget, values.privateUserPath);
+  fs.writeFileSync(path.join(outsideDirectoryTarget, 'private.txt'), values.privateGitControlPath);
+  const links = [
+    ['contained-file-link', path.relative(notesDirectory, containedFileTarget)],
+    ['contained-directory-link', path.relative(notesDirectory, containedDirectoryTarget)],
+    ['outside-file-link', outsideFileTarget],
+    ['outside-directory-link', outsideDirectoryTarget],
+  ].map(([name, target]) => {
+    const link = path.join(notesDirectory, name);
+    fs.symlinkSync(target, link);
+    return { file: `notes/${name}`, link, target };
+  });
+  return {
+    fixturePackage,
+    links,
+    targets: [
+      containedFileTarget,
+      containedDirectoryTarget,
+      outsideFileTarget,
+      outsideDirectoryTarget,
+      path.join(containedDirectoryTarget, 'private.txt'),
+      path.join(outsideDirectoryTarget, 'private.txt'),
+    ],
+    values,
+  };
+}
+
 test('reports every seeded private reference and copied relative import', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixturePackage = temporaryPackage(t);
@@ -207,50 +275,95 @@ test('decodes escaped JSON keys before checking private references', t => {
   ]);
 });
 
-test('rejects contained and escaping symlink entries without reading their targets', t => {
+test('rejects contained and escaping file and directory symlinks without target I/O', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixture = symlinkFixture(t);
+  const violations = withoutSymlinkTargetIo(
+    [...fixture.links.map(link => link.link), ...fixture.targets],
+    () => auditPublicPackage(fixture.fixturePackage)
+  );
+  assert.deepEqual(
+    violations.filter(violation => violation.type === 'symlink-entry'),
+    fixture.links
+      .map(link => ({
+        file: link.file,
+        type: 'symlink-entry',
+        value: fs.readlinkSync(link.link),
+      }))
+      .sort((left, right) => left.file.localeCompare(right.file))
+  );
+});
+
+test('rejects a symlinked package root without reading its target', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixturePackage = temporaryPackage(t);
-  const values = privateFixtureValues();
-  const notesDirectory = path.join(fixturePackage, 'notes');
-  const outsideTarget = path.join(path.dirname(fixturePackage), 'outside.txt');
-  fs.mkdirSync(notesDirectory);
-  fs.writeFileSync(path.join(notesDirectory, 'inside-target.txt'), values.privateGitControlPath);
-  fs.writeFileSync(outsideTarget, 'outside');
-  fs.symlinkSync('inside-target.txt', path.join(notesDirectory, 'inside-link.txt'));
-  fs.symlinkSync(outsideTarget, path.join(notesDirectory, 'outside-link.txt'));
+  const rootLink = path.join(path.dirname(fixturePackage), 'package-link');
+  fs.symlinkSync(fixturePackage, rootLink);
 
-  const violations = auditPublicPackage(fixturePackage);
+  const violations = withoutSymlinkTargetIo([rootLink, fixturePackage], () =>
+    auditPublicPackage(rootLink)
+  );
 
-  assert.deepEqual(
-    violations.filter(violation => violation.file.endsWith('-link.txt')),
-    [
-      {
-        file: 'notes/inside-link.txt',
-        type: 'symlink-entry',
-        value: fs.readlinkSync(path.join(notesDirectory, 'inside-link.txt')),
-      },
-      {
-        file: 'notes/outside-link.txt',
-        type: 'symlink-entry',
-        value: fs.readlinkSync(path.join(notesDirectory, 'outside-link.txt')),
-      },
-    ]
-  );
-  assert.ok(
-    violations.some(
-      violation =>
-        violation.file === 'notes/inside-target.txt' &&
-        violation.type === 'private-git-control-path' &&
-        violation.value === values.privateGitControlPath
-    )
-  );
-  assert.equal(
-    violations.some(
-      violation =>
-        violation.type === 'private-user-path' && violation.value === values.privateUserPath
-    ),
-    false
-  );
+  assert.deepEqual(violations, [
+    {
+      file: '.',
+      type: 'symlink-entry',
+      value: fs.readlinkSync(rootLink),
+    },
+  ]);
+});
+
+test('pins the root and rejects a queued directory that swaps to a symlink', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const queuedDirectory = path.join(fixturePackage, 'queued');
+  const outsideRoot = path.join(path.dirname(fixturePackage), 'outside-root');
+  const outsideDirectory = path.join(path.dirname(fixturePackage), 'outside-directory');
+  const displacedRoot = path.join(path.dirname(fixturePackage), 'displaced-root');
+  const displacedDirectory = path.join(fixturePackage, 'displaced-directory');
+  fs.mkdirSync(queuedDirectory);
+  fs.mkdirSync(outsideRoot);
+  fs.mkdirSync(outsideDirectory);
+  fs.writeFileSync(path.join(outsideRoot, 'private.txt'), privateFixtureValues().privateUserPath);
+  fs.writeFileSync(path.join(outsideDirectory, 'private.txt'), privateFixtureValues().privateUserPath);
+  const originalOpen = fs.openSync;
+  let rootSwapped = false;
+  let directorySwapped = false;
+  fs.openSync = function swapAfterPinning(pathValue, ...arguments_) {
+    const descriptor = originalOpen.call(this, pathValue, ...arguments_);
+    if (!rootSwapped && pathValue === fixturePackage) {
+      rootSwapped = true;
+      fs.renameSync(fixturePackage, displacedRoot);
+      fs.symlinkSync(outsideRoot, fixturePackage);
+      directorySwapped = true;
+      fs.renameSync(path.join(displacedRoot, 'queued'), displacedDirectory);
+      fs.symlinkSync(outsideDirectory, path.join(displacedRoot, 'queued'));
+    }
+    return descriptor;
+  };
+  let violations;
+  try {
+    violations = withoutSymlinkTargetIo(
+      [fixturePackage, queuedDirectory, outsideRoot, outsideDirectory],
+      () => auditPublicPackage(fixturePackage)
+    );
+  } finally {
+    fs.openSync = originalOpen;
+    if (rootSwapped) {
+      fs.unlinkSync(fixturePackage);
+      fs.renameSync(displacedRoot, fixturePackage);
+    }
+  }
+
+  assert.equal(rootSwapped, true);
+  assert.equal(directorySwapped, true);
+  assert.deepEqual(violations, [
+    {
+      file: 'queued',
+      type: 'symlink-entry',
+      value: outsideDirectory,
+    },
+  ]);
 });
 
 test('reports CommonJS and ESM references that resolve outside the public package', t => {
@@ -269,6 +382,11 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     JSON.stringify(outsideRequest),
     ');\n',
   ]);
+  writeSource(sourceDirectory, 'commonjs-spaced.cjs', [
+    'require (',
+    JSON.stringify(outsideRequest),
+    ');\n',
+  ]);
   writeSource(sourceDirectory, 'esm-default.mjs', [
     'import dependency from ',
     JSON.stringify(outsideRequest),
@@ -281,6 +399,11 @@ test('reports CommonJS and ESM references that resolve outside the public packag
   ]);
   writeSource(sourceDirectory, 'esm-dynamic.mjs', [
     'import(',
+    JSON.stringify(outsideRequest),
+    ');\n',
+  ]);
+  writeSource(sourceDirectory, 'esm-dynamic-spaced.mjs', [
+    'import (',
     JSON.stringify(outsideRequest),
     ');\n',
   ]);
@@ -308,6 +431,12 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     '; export{thing}from ',
     JSON.stringify(outsideRequest),
     ';\n',
+    'const matcher = /"/;\n',
+    'const endpointAfterMatcher = ',
+    JSON.stringify('https://public.example'),
+    '; export{thing}from ',
+    JSON.stringify(outsideRequest),
+    ';\n',
   ]);
 
   const references = auditPublicPackage(fixturePackage)
@@ -317,8 +446,11 @@ test('reports CommonJS and ESM references that resolve outside the public packag
 
   assert.deepEqual(references, [
     `src/commonjs.cjs:${outsideRequest}`,
+    `src/commonjs-spaced.cjs:${outsideRequest}`,
     `src/esm-default.mjs:${outsideRequest}`,
     `src/esm-dynamic.mjs:${outsideRequest}`,
+    `src/esm-dynamic-spaced.mjs:${outsideRequest}`,
+    `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
@@ -327,7 +459,7 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideTypeRequest}`,
     `src/esm-side-effect.mjs:${outsideRequest}`,
-  ]);
+  ].sort());
 });
 
 test('the audit-public command prints every violation and exits nonzero', async () => {
