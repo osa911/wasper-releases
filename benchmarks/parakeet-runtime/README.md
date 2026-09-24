@@ -38,22 +38,41 @@ npm run doctor
 ```
 
 `npm run doctor` is read-only. It does not install software, create the cache,
-download a model, or fetch a corpus. It prints the hardware, macOS version,
-Node version, available disk, cache and output locations, Wasper classification,
-and a state for every runtime. It exits nonzero when a prerequisite invalidates
-a full run; that is expected at this commit because of the locked runtime and
-long-source blockers.
+download a model, or fetch a corpus. It prints the hardware, Darwin platform
+and kernel release, Node version, available disk, cache and output locations,
+Wasper classification, and a state for every runtime. It exits nonzero when a
+prerequisite invalidates a full run; that is expected at this commit because of
+the locked runtime and long-source blockers.
 
 The doctor requires at least 24 GiB of free disk. This is a preflight floor,
-not a full-run storage estimate. A reliable elapsed-time and total-storage
-estimate is not available while the full cohort is blocked.
+not an exact cache size. No measured full-run elapsed time or cache size is
+available while the full cohort is blocked.
 
 If doctor reports a missing requirement, use the command it prints. The manual
 remediations documented here are `xcode-select --install`, `brew install
 node@22`, `brew install python@3.12`, `brew install cmake`, and `npm run clean`.
-Install Wasper manually from the linked release below, then run `npm run doctor`
-again. Connect the Mac to the internet before acquiring public models or corpus
+If doctor reports that Wasper.app is missing, complete these steps:
+
+1. Download the current macOS archive from [Wasper releases](https://github.com/osa911/wasper-releases/releases).
+2. Open the archive and move `Wasper.app` to `/Applications`.
+3. Run `npm run doctor` again.
+
+Connect the Mac to the internet before acquiring public models or corpus
 sources.
+
+## Plan a full run
+
+The recorded short schedule has 5,103 requests across seven runtimes and three
+passes. It contains 14:10:30 of source audio.
+
+After setup, reserve a half day on a supported Mac. This is a planning estimate,
+not a measured result. It excludes model and source acquisition, manual-input
+delays, blocked locks, and hardware or runtime variation.
+
+Reserve 32 GiB of free storage for planning. Doctor enforces a 24 GiB floor.
+The extra 8 GiB is headroom, not an exact cache size. The current ready-runtime
+lock lists about 5.3 GiB of artifacts; corpus sources, build outputs, and run
+data can add more storage.
 
 ## Run the benchmark when prerequisites are available
 

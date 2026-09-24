@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -93,6 +94,7 @@ test('reports a supported M-series Mac without creating the cache or output dire
   });
   assert.equal(check(result, 'apple-silicon').state, 'ready');
   assert.equal(check(result, 'network').state, 'ready');
+  assert.match(formatDoctor(result), /Darwin kernel: darwin 24\.6\.0/);
   assert.equal(result.wasper.baselineKind, 'published-exact');
   assert.equal(result.runtimes.length, RUNTIME_DESCRIPTORS.length);
   assert.ok(result.runtimes.every(runtime => runtime.state === 'ready'));
@@ -173,6 +175,10 @@ test('reports a missing Wasper.app without attempting a download', t => {
   assert.equal(result.ok, false);
   assert.equal(result.wasper.state, 'blocked');
   assert.match(result.wasper.detail, /Wasper\.app is missing/);
+  assert.match(
+    check(result, 'wasper-app').remediation,
+    /https:\/\/github\.com\/osa911\/wasper-releases\/releases/
+  );
   assert.equal(fs.existsSync(layout.cacheRoot), false);
 });
 
@@ -261,4 +267,26 @@ test('routes the doctor command through the public CLI without creating the cach
   assert.equal(result.writes, false);
   assert.match(writes.join(''), /Doctor/);
   assert.equal(fs.existsSync(layout.cacheRoot), false);
+});
+
+test('the doctor command exits nonzero when full-run locks are blocked', t => {
+  const homeDirectory = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'parakeet-doctor-cli-'))
+  );
+  t.after(() => fs.rmSync(homeDirectory, { force: true, recursive: true }));
+
+  const result = spawnSync(process.execPath, [path.join(__dirname, '../bin/benchmark.cjs'), 'doctor'], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: homeDirectory },
+  });
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /Full run: blocked/);
+  assert.match(result.stderr, /doctor found prerequisites that block a full run/);
+  assert.equal(
+    fs.existsSync(
+      path.join(homeDirectory, 'Library/Caches/Wasper/benchmarks/parakeet-runtime-v1')
+    ),
+    false
+  );
 });

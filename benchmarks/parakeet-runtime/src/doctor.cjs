@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const MINIMUM_FREE_DISK_BYTES = 24 * 1024 ** 3;
 const MINIMUM_NODE_MAJOR = 22;
+const WASPER_RELEASES_URL = 'https://github.com/osa911/wasper-releases/releases';
 const REQUIRED_TOOLS = Object.freeze([
   { id: 'git', command: 'git', remediation: 'xcode-select --install' },
   { id: 'python3', command: 'python3', remediation: 'brew install python@3.12' },
@@ -133,7 +134,9 @@ function doctor(layout, runtimeLock, dependencies = {}) {
     state(
       'macos',
       system.platform === 'darwin',
-      system.platform === 'darwin' ? `macOS kernel ${system.release}` : `found ${system.platform}`,
+      system.platform === 'darwin'
+        ? `Darwin kernel ${system.release}`
+        : `found ${system.platform}`,
       'Use a supported Apple Silicon Mac.'
     ),
     state(
@@ -197,7 +200,7 @@ function doctor(layout, runtimeLock, dependencies = {}) {
     wasper = {
       state: 'blocked',
       detail: error instanceof Error ? error.message : String(error),
-      remediation: 'Install Wasper 1.8.0 or later, then run npm run doctor again.',
+      remediation: `Download Wasper: ${WASPER_RELEASES_URL}`,
     };
   }
   checks.push(
@@ -265,7 +268,7 @@ function formatDoctor(result) {
   const lines = [
     'Doctor',
     `Hardware: ${result.system.cpuBrand ?? 'unknown'} (${result.system.arch})`,
-    `Operating system: ${result.system.platform} ${result.system.release}`,
+    `Darwin kernel: ${result.system.platform} ${result.system.release}`,
     `Node: ${result.system.nodeVersion}`,
     `Free disk: ${gibibytes(result.system.freeDiskBytes)} GiB`,
     `Cache: ${result.layout.cacheRoot}`,
