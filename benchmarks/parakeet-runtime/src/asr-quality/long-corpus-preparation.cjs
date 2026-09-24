@@ -170,7 +170,9 @@ function validateLongSourceRegistry(value) {
     !Array.isArray(value.items) ||
     value.items.length !== 21
   ) {
-    fail('long source registry must contain exactly 21 fixtures with redistribution prohibited');
+    fail(
+      'long source registry must contain exactly 21 fixtures with redistribution prohibited'
+    );
   }
   const fixtureIds = new Set();
   const languages = new Set();
@@ -229,7 +231,10 @@ function validateLongSourceRegistry(value) {
       fail(`long source registry item ${index}.excludedReferenceCues is only valid for mTEDx`);
     }
   }
-  if (languages.size !== LANGUAGES.length || LANGUAGES.some(language => !languages.has(language))) {
+  if (
+    languages.size !== LANGUAGES.length ||
+    LANGUAGES.some(language => !languages.has(language))
+  ) {
     fail('long source registry must cover all nine languages');
   }
   return deepFreeze(JSON.parse(JSON.stringify(value)));
@@ -286,7 +291,10 @@ function deriveMtedxReference(source, excludedReferenceCues) {
     fail('mTEDx reference first cue is not the editorial credit');
   }
   const exclusions = new Map(
-    excludedReferenceCues.map(entry => [entry.text, { expected: entry.occurrences, observed: 0 }])
+    excludedReferenceCues.map(entry => [
+      entry.text,
+      { expected: entry.occurrences, observed: 0 },
+    ])
   );
   const lexical = [];
   for (const cue of cues.slice(1)) {
@@ -422,7 +430,8 @@ function inspectRegisteredSource(root, fixture) {
   );
   try {
     const openedBefore = fs.fstatSync(descriptor);
-    if (!sameFileIdentity(namedBefore, openedBefore)) fail(`${label} integrity changed on open`);
+    if (!sameFileIdentity(namedBefore, openedBefore))
+      fail(`${label} integrity changed on open`);
     const hash = crypto.createHash('sha256');
     const buffer = Buffer.allocUnsafe(64 * 1024);
     let total = 0;
@@ -479,9 +488,14 @@ function defaultProbeDuration({ inputPath }) {
 }
 
 function defaultExtractPdfText({ inputPath }) {
-  return runTool('pdftotext', ['-raw', inputPath, '-'], `pdftotext ${path.basename(inputPath)}`, {
-    maxBuffer: BYTE_LIMITS.text,
-  });
+  return runTool(
+    'pdftotext',
+    ['-raw', inputPath, '-'],
+    `pdftotext ${path.basename(inputPath)}`,
+    {
+      maxBuffer: BYTE_LIMITS.text,
+    }
+  );
 }
 
 function defaultNormalizeAudio({ fixture, inputPath, outputPath }) {
@@ -548,7 +562,8 @@ function prepareLongCorpus(options, dependencies = {}) {
   nonEmptyString(options.sourceRoot, 'sourceRoot');
   nonEmptyString(options.outputRoot, 'outputRoot');
   nonEmptyString(options.generatedAt, 'generatedAt');
-  if (Number.isNaN(Date.parse(options.generatedAt))) fail('generatedAt must be an ISO timestamp');
+  if (Number.isNaN(Date.parse(options.generatedAt)))
+    fail('generatedAt must be an ISO timestamp');
   const sourceRoot = bindTrustedRoot(options.sourceRoot, 'long source root');
   fs.mkdirSync(options.outputRoot, { recursive: true, mode: 0o700 });
   const outputRoot = bindTrustedRoot(options.outputRoot, 'prepared long output root');
@@ -568,7 +583,9 @@ function prepareLongCorpus(options, dependencies = {}) {
     fail('prepared long playback root escaped its output root');
   }
   const previous = existingPreparedManifest(outputRoot.realPath);
-  const previousById = new Map((previous.value?.items || []).map(item => [item.fixtureId, item]));
+  const previousById = new Map(
+    (previous.value?.items || []).map(item => [item.fixtureId, item])
+  );
   const normalizeAudio = dependencies.normalizeAudio || defaultNormalizeAudio;
   const probeDuration = dependencies.probeDuration || defaultProbeDuration;
   const extractPdfText = dependencies.extractPdfText || defaultExtractPdfText;
@@ -579,7 +596,8 @@ function prepareLongCorpus(options, dependencies = {}) {
     const observedSourceDuration = probeDuration({ fixture, inputPath: sourcePath });
     if (
       !Number.isFinite(observedSourceDuration) ||
-      Math.abs(observedSourceDuration - fixture.durationSeconds) > SOURCE_DURATION_TOLERANCE_SECONDS
+      Math.abs(observedSourceDuration - fixture.durationSeconds) >
+        SOURCE_DURATION_TOLERANCE_SECONDS
     ) {
       fail(`${fixture.fixtureId} source duration drifted`);
     }
@@ -606,7 +624,9 @@ function prepareLongCorpus(options, dependencies = {}) {
     if (fs.existsSync(outputPath)) {
       const prior = previousById.get(fixture.fixtureId);
       if (!prior || prior.playbackRelativePath !== playbackRelativePath) {
-        fail(`${fixture.fixtureId} existing playback WAV is not bound by the prepared manifest`);
+        fail(
+          `${fixture.fixtureId} existing playback WAV is not bound by the prepared manifest`
+        );
       }
       const info = fs.lstatSync(outputPath);
       if (
@@ -688,6 +708,7 @@ function prepareLongCorpus(options, dependencies = {}) {
 }
 
 module.exports = {
+  timedTextBlocks,
   deriveMtedxReference,
   deriveRoyalSrtReference,
   deriveWhiteHouseReference,

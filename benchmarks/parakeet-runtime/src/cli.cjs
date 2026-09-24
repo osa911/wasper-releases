@@ -20,7 +20,7 @@ const COMMANDS = new Set([
   'report',
   'clean',
 ]);
-const OUTPUT_COMMANDS = new Set(['recover-corpus', 'smoke', 'run', 'report']);
+const OUTPUT_COMMANDS = new Set(['smoke', 'run', 'report']);
 const WASPER_APP_COMMANDS = new Set(['smoke', 'run']);
 const LAYOUT_OPTIONS = new Map([
   ['--cache-dir', 'cacheDir'],
@@ -36,16 +36,32 @@ function parseCommandArguments(argv) {
     throw new TypeError('a runtime benchmark command is required');
   }
   const [command, ...argumentsList] = argv;
-  if (!COMMANDS.has(command)) throw new TypeError(`unknown runtime benchmark command: ${command}`);
+  if (!COMMANDS.has(command))
+    throw new TypeError(`unknown runtime benchmark command: ${command}`);
   const options = {
     output: null,
     cacheDir: null,
     outputDir: null,
     wasperApp: null,
+    cohort: null,
+    acceptSourceTerms: false,
   };
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
-    const option = argument === '--output' ? 'output' : LAYOUT_OPTIONS.get(argument);
+    if (
+      argument === '--accept-source-terms' &&
+      command === 'recover-corpus' &&
+      !options.acceptSourceTerms
+    ) {
+      options.acceptSourceTerms = true;
+      continue;
+    }
+    const option =
+      argument === '--cohort' && command === 'recover-corpus'
+        ? 'cohort'
+        : argument === '--output'
+          ? 'output'
+          : LAYOUT_OPTIONS.get(argument);
     if (!option || options[option] !== null) {
       throw new TypeError(`invalid arguments for runtime benchmark command ${command}`);
     }
@@ -65,10 +81,16 @@ function parseCommandArguments(argv) {
     throw new TypeError(`${command} does not accept --output`);
   }
   const hasStorageOption = options.cacheDir !== null || options.outputDir !== null;
-  const hasUnsupportedWasperApp = options.wasperApp !== null && !WASPER_APP_COMMANDS.has(command);
-  if (command !== 'clean' && (hasStorageOption || hasUnsupportedWasperApp)) {
+  const hasUnsupportedWasperApp =
+    options.wasperApp !== null && !WASPER_APP_COMMANDS.has(command);
+  if (
+    (command !== 'clean' && command !== 'recover-corpus' && hasStorageOption) ||
+    (command !== 'clean' && hasUnsupportedWasperApp)
+  ) {
     throw new TypeError(`${command} does not accept benchmark layout options`);
   }
+  if (options.cohort !== null && !['short', 'long', 'all'].includes(options.cohort))
+    throw new TypeError('--cohort must be short, long, or all');
   return { command, ...options };
 }
 
@@ -77,8 +99,9 @@ function createCommandPlan(
   { repositoryRoot = path.resolve(__dirname, '..'), homeDirectory } = {}
 ) {
   validateRuntimeBenchmarkContract();
-  const { command, output, cacheDir, outputDir, wasperApp } = parseCommandArguments(argv);
-  if (command === 'clean') {
+  const { command, output, cacheDir, outputDir, wasperApp, cohort, acceptSourceTerms } =
+    parseCommandArguments(argv);
+  if (command === 'clean' || command === 'recover-corpus') {
     return Object.freeze({
       command,
       layout: resolveLayout({
@@ -87,6 +110,7 @@ function createCommandPlan(
         ...(wasperApp === null ? {} : { wasperApp }),
         ...(homeDirectory === undefined ? {} : { homeDirectory }),
       }),
+      ...(command === 'recover-corpus' ? { cohort: cohort ?? 'all', acceptSourceTerms } : {}),
       writes: false,
     });
   }
@@ -187,14 +211,14 @@ async function runCli(
     const recoverCorpus =
       recoverCorpusImpl ?? require('./runtime/corpus-recovery.cjs').recoverCorpus;
     const recovered = await recoverCorpus({
-      output: plan.output,
-      repositoryRoot,
+      layout: plan.layout,
+      cohort: plan.cohort,
+      acceptSourceTerms: plan.acceptSourceTerms,
     });
     const result = Object.freeze({
       ...plan,
       writes: true,
       manifestPath: recovered.manifestPath,
-      identityReportPath: recovered.identityReportPath,
     });
     stdout.write(`${JSON.stringify(result)}\n`);
     return result;

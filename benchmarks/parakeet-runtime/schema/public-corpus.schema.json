@@ -1,0 +1,255 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Public Parakeet corpus source metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "fixtures"],
+  "properties": {
+    "schema": {
+      "const": "wasper.public-corpus-sources.v1"
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/fixture"
+      }
+    }
+  },
+  "definitions": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixtureId",
+        "language",
+        "cohort",
+        "sourceUrl",
+        "referenceUrl",
+        "licenseUrl",
+        "attribution",
+        "sourceSha256",
+        "normalizedWavSha256",
+        "referenceSha256",
+        "durationSeconds",
+        "acquisition"
+      ],
+      "properties": {
+        "fixtureId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z]{2}-(short|long)-[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "language": {
+          "enum": ["de", "el", "en", "es", "fr", "it", "nl", "pl", "pt"]
+        },
+        "cohort": {
+          "enum": ["short", "long"]
+        },
+        "sourceUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "referenceUrl": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "licenseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attribution": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "normalizedWavSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "referenceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "acquisition": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "audio", "reference"],
+              "properties": {
+                "state": {
+                  "const": "automatic"
+                },
+                "audio": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["kind"],
+                      "properties": {
+                        "kind": {
+                          "const": "direct"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["kind", "archiveSha256", "member"],
+                      "properties": {
+                        "kind": {
+                          "const": "tar-member"
+                        },
+                        "archiveSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "member": {
+                          "type": "string",
+                          "maxLength": 512,
+                          "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))[^\\\\\\u0000-\\u001f]+$",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "reference": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["kind", "sha256", "adapter"],
+                      "properties": {
+                        "kind": {
+                          "const": "direct"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "adapter": {
+                          "enum": ["text-v1", "wolne-lektury-txt-v1"]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["kind", "sha256", "itemId", "adapter"],
+                      "properties": {
+                        "kind": {
+                          "const": "fleurs-tsv"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "itemId": {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9_-]+\\.wav$"
+                        },
+                        "adapter": {
+                          "const": "fleurs-tsv-v1"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "kind",
+                        "archiveSha256",
+                        "member",
+                        "sha256",
+                        "adapter",
+                        "excludedCues"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "const": "tar-member"
+                        },
+                        "archiveSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "member": {
+                          "type": "string",
+                          "maxLength": 512,
+                          "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))[^\\\\\\u0000-\\u001f]+$",
+                          "minLength": 1
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "adapter": {
+                          "const": "mtedx-vtt-v1"
+                        },
+                        "excludedCues": {
+                          "type": "array",
+                          "uniqueItems": true,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["sha256", "occurrences"],
+                            "properties": {
+                              "sha256": {
+                                "type": "string",
+                                "pattern": "^[a-f0-9]{64}$"
+                              },
+                              "occurrences": {
+                                "type": "integer",
+                                "minimum": 1
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "reason"],
+              "properties": {
+                "state": {
+                  "const": "manual-authorized-input-required"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "referenceSourceSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "referenceAdapter": {
+                  "enum": ["white-house-pdf-v1", "royal-srt-v1"]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
