@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { execFile } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { execFile } = childProcess;
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -36,6 +37,32 @@ function writeGeneratedFiles(layout) {
   }
 }
 
+function retainedOwnedCacheFile(layout, name) {
+  for (const containerName of fs.readdirSync(layout.cacheNamespaceRoot)) {
+    if (!containerName.startsWith('.parakeet-runtime-clean-')) continue;
+    const container = path.join(layout.cacheNamespaceRoot, containerName);
+    if (!fs.lstatSync(container).isDirectory()) continue;
+    for (const entry of fs.readdirSync(container)) {
+      const candidate = path.join(container, entry, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  throw new Error(`could not locate retained owned cache file: ${name}`);
+}
+
+function retainedDeletionHandoffEntry(layout) {
+  const outerName = fs
+    .readdirSync(layout.cacheRoot)
+    .find(name => name.startsWith('.wasper-parakeet-delete-'));
+  assert.notEqual(outerName, undefined);
+  const outerEntry = path.join(layout.cacheRoot, outerName, 'owned-entry');
+  const innerName = fs
+    .readdirSync(outerEntry)
+    .find(name => name.startsWith('.wasper-parakeet-delete-'));
+  assert.notEqual(innerName, undefined);
+  return path.join(outerEntry, innerName, 'owned-entry');
+}
+
 // Run the real helper with a filesystem interleaving immediately before rename.
 // The Node hook below exercises the same interleaving in the pre-fix cleaner.
 function restorationRacePython(homeDirectory, race) {
@@ -52,32 +79,39 @@ import sys
 race = json.loads(${JSON.stringify(JSON.stringify(race))})
 original_rename = os.rename
 original_stat = os.stat
+arguments = sys.argv[1:]
+while arguments and arguments[0] in ('-I', '-S', '-B'):
+    arguments.pop(0)
+target, *target_arguments = arguments
+is_restore = bool(target_arguments and target_arguments[0] == 'restore-cache')
+container_name = target_arguments[target_arguments.index('--container-name') + 1] if '--container-name' in target_arguments else None
 
 def interleave():
     if not os.path.exists(race["signal"]):
-        original_rename(race["ancestor"], race["displaced"])
-        os.symlink(race["external"], race["ancestor"])
+        ancestor = race.get("ancestor")
+        if ancestor is None:
+            namespace = os.path.realpath('/dev/fd/3')
+            ancestor = os.path.join(namespace, container_name)
+        displaced = race.get("displaced", ancestor + '-displaced')
+        original_rename(ancestor, displaced)
+        os.symlink(race["external"], ancestor)
         with open(race["signal"], "w") as signal:
             signal.write("interleaved")
 
 def interleave_rename(source, destination, *args, **kwargs):
-    if race.get("phase", "rename") == "rename":
+    if is_restore and race.get("phase", "rename") == "rename":
         interleave()
     return original_rename(source, destination, *args, **kwargs)
 
 def interleave_stat(name, *args, **kwargs):
     result = original_stat(name, *args, **kwargs)
-    if (race.get("phase") == "leftover-stat" and name == "owned-cache"
-            and stat.S_ISLNK(result.st_mode) and os.path.isdir(race["cacheRoot"])):
+    if (is_restore and race.get("phase") == "leftover-stat" and name == "owned-cache"
+            and stat.S_ISLNK(result.st_mode)):
         interleave()
     return result
 
 os.rename = interleave_rename
 os.stat = interleave_stat
-arguments = sys.argv[1:]
-while arguments and arguments[0] in ('-I', '-S', '-B'):
-    arguments.pop(0)
-target, *target_arguments = arguments
 sys.argv = [target, *target_arguments]
 runpy.run_path(target, run_name="__main__")
 `,
@@ -86,8 +120,8 @@ runpy.run_path(target, run_name="__main__")
   return executable;
 }
 
-function deletionRacePython(homeDirectory, { entry, replacement }) {
-  const executable = path.join(homeDirectory, `delete-race-${entry}-python`);
+function deletionCloseRacePython(homeDirectory, replacement) {
+  const executable = path.join(homeDirectory, `delete-close-race-${replacement}-python`);
   fs.writeFileSync(
     executable,
     `#!/usr/bin/python3
@@ -95,34 +129,35 @@ import os
 import runpy
 import sys
 
-ENTRY = ${JSON.stringify(entry)}
 REPLACEMENT = ${JSON.stringify(replacement)}
-opened = set()
+opened = {}
 swapped = False
 original_close = os.close
 original_open = os.open
 
 def open_entry(name, *args, **kwargs):
     descriptor = original_open(name, *args, **kwargs)
-    if name == ENTRY:
-        opened.add(descriptor)
+    if name == 'owned-entry':
+        opened[descriptor] = kwargs['dir_fd']
     return descriptor
 
 def close_entry(descriptor):
     global swapped
+    parent = opened.pop(descriptor, None)
     original_close(descriptor)
-    if descriptor not in opened or swapped:
+    if parent is None or swapped:
         return
     swapped = True
-    root = sys.argv[sys.argv.index('--root') + 1]
-    target = os.path.join(root, ENTRY) if REPLACEMENT == 'directory' else os.path.join(root, 'artifacts', ENTRY)
-    if os.path.lexists(target):
-        os.rename(target, target + '.owned-before-swap')
+    try:
+        os.rename('owned-entry', 'owned-entry.owned-before-swap', src_dir_fd=parent, dst_dir_fd=parent)
+    except FileNotFoundError:
+        pass
     if REPLACEMENT == 'file':
-        with open(target, 'w', encoding='utf-8') as output:
+        target = os.open('owned-entry', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+        with os.fdopen(target, 'w', encoding='utf-8') as output:
             output.write('substituted entry')
     else:
-        os.mkdir(target)
+        os.mkdir('owned-entry', dir_fd=parent)
 
 os.open = open_entry
 os.close = close_entry
@@ -137,6 +172,71 @@ runpy.run_path(target, run_name='__main__')
   );
   return executable;
 }
+
+function deletionHandoffRacePython(homeDirectory, { entry, external }) {
+  const executable = path.join(homeDirectory, `delete-handoff-race-${entry}-python`);
+  fs.writeFileSync(
+    executable,
+    `#!/usr/bin/python3
+import os
+import runpy
+import sys
+
+ENTRY = ${JSON.stringify(entry)}
+EXTERNAL = ${JSON.stringify(external)}
+swapped = False
+original_rename = os.rename
+
+def rename_entry(source, destination, *args, **kwargs):
+    global swapped
+    if source == ENTRY and not swapped:
+        swapped = True
+        container_name = sys.argv[sys.argv.index('--container-name') + 1]
+        namespace = os.path.realpath('/dev/fd/3')
+        root = os.path.join(namespace, container_name, 'owned-cache')
+        target = os.path.join(root, ENTRY)
+        original_rename(target, target + '.owned-before-swap')
+        os.symlink(EXTERNAL, target)
+    return original_rename(source, destination, *args, **kwargs)
+
+os.rename = rename_entry
+arguments = sys.argv[1:]
+while arguments and arguments[0] in ('-I', '-S', '-B'):
+    arguments.pop(0)
+target, *target_arguments = arguments
+sys.argv = [target, *target_arguments]
+runpy.run_path(target, run_name='__main__')
+`,
+    { mode: 0o700 }
+  );
+  return executable;
+}
+
+test('clean refuses a cache root swapped immediately before quarantine handoff', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const external = path.join(homeDirectory, 'external-cache');
+  fs.mkdirSync(external);
+  const sentinel = path.join(external, 'sentinel');
+  fs.writeFileSync(sentinel, 'unchanged');
+  let swapped = false;
+  const spawnSync = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', function swapBeforeQuarantine(command, args, options) {
+    if (args.includes('quarantine-cache') && !swapped) {
+      swapped = true;
+      fs.renameSync(layout.cacheRoot, `${layout.cacheRoot}.owned-before-swap`);
+      fs.symlinkSync(external, layout.cacheRoot);
+    }
+    return spawnSync.call(this, command, args, options);
+  });
+
+  await assert.rejects(clean(layout), /changed|symlink|cleanup/i);
+
+  assert.equal(swapped, true, 'the cache replacement must run at quarantine handoff');
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
+  assert.equal(fs.existsSync(path.join(external, 'artifacts')), false);
+});
 
 test('clean rejects a missing ownership marker and preserves generated data', async t => {
   const { layout } = ownedLayout(t);
@@ -327,35 +427,65 @@ test('clean leaves a symlink target outside the cache untouched', async t => {
   assert.equal(fs.existsSync(path.join(layout.holdersRoot, 'escape')), true);
 });
 
-test('clean does not unlink a file substituted when its verified descriptor closes', async t => {
+test('clean does not unlink through a generated directory swapped before deletion handoff', async t => {
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);
   writeGeneratedFiles(layout);
-  const pythonExecutable = deletionRacePython(homeDirectory, {
-    entry: 'generated.txt',
-    replacement: 'file',
+  const external = path.join(homeDirectory, 'external-file-parent');
+  const externalFile = path.join(external, 'generated.txt');
+  fs.mkdirSync(external);
+  fs.writeFileSync(externalFile, 'external file');
+  const pythonExecutable = deletionHandoffRacePython(homeDirectory, {
+    entry: 'artifacts',
+    external,
   });
+
+  await assert.rejects(clean(layout, { pythonExecutable }), /changed|cleanup/i);
+
+  assert.equal(fs.readFileSync(externalFile, 'utf8'), 'external file');
+});
+
+test('clean does not rmdir a generated directory swapped before deletion handoff', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const external = path.join(homeDirectory, 'external-directory');
+  fs.mkdirSync(external);
+  const sentinel = path.join(external, 'sentinel');
+  fs.writeFileSync(sentinel, 'external directory');
+  const pythonExecutable = deletionHandoffRacePython(homeDirectory, {
+    entry: 'artifacts',
+    external,
+  });
+
+  await assert.rejects(clean(layout, { pythonExecutable }), /changed|cleanup/i);
+
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'external directory');
+});
+
+test('clean preserves a file substituted after its verified descriptor closes', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const pythonExecutable = deletionCloseRacePython(homeDirectory, 'file');
 
   await assert.rejects(clean(layout, { pythonExecutable }), /cleanup|directory/i);
 
   assert.equal(
-    fs.readFileSync(path.join(layout.artifactsRoot, 'generated.txt'), 'utf8'),
+    fs.readFileSync(retainedDeletionHandoffEntry(layout), 'utf8'),
     'substituted entry'
   );
 });
 
-test('clean does not rmdir a directory substituted when its verified descriptor closes', async t => {
+test('clean preserves a directory substituted after its verified descriptor closes', async t => {
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);
-  fs.mkdirSync(layout.artifactsRoot, { recursive: true });
-  const pythonExecutable = deletionRacePython(homeDirectory, {
-    entry: 'artifacts',
-    replacement: 'directory',
-  });
+  writeGeneratedFiles(layout);
+  const pythonExecutable = deletionCloseRacePython(homeDirectory, 'directory');
 
-  await clean(layout, { pythonExecutable });
+  await assert.rejects(clean(layout, { pythonExecutable }), /cleanup|directory/i);
 
-  assert.equal(fs.lstatSync(layout.artifactsRoot).isDirectory(), true);
+  assert.equal(fs.lstatSync(retainedDeletionHandoffEntry(layout)).isDirectory(), true);
 });
 
 test('clean rejects a regular file in place of a generated directory', async t => {
@@ -404,8 +534,7 @@ test('clean cannot follow an interleaved cache-root replacement to external data
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);
   writeGeneratedFiles(layout);
-  const retainedFile = path.join(layout.cacheRoot, 'keep.txt');
-  fs.writeFileSync(retainedFile, 'keep');
+  fs.writeFileSync(path.join(layout.cacheRoot, 'keep.txt'), 'keep');
 
   const externalRoot = path.join(homeDirectory, 'external-replacement');
   const externalArtifact = path.join(externalRoot, 'artifacts', 'important.txt');
@@ -427,7 +556,7 @@ test('clean cannot follow an interleaved cache-root replacement to external data
   );
 
   assert.equal(fs.readFileSync(externalArtifact, 'utf8'), 'external');
-  assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'keep');
+  assert.equal(fs.readFileSync(path.join(layout.cacheRoot, 'keep.txt'), 'utf8'), 'keep');
   assert.equal(
     fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
     true
@@ -490,7 +619,7 @@ test('clean cannot follow an interleaved quarantine replacement to external data
   );
 });
 
-test('restoration cannot rename external data through a replaced source ancestor', async t => {
+test('restoration refuses an unsafe quarantined source without touching external data', async t => {
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);
   writeGeneratedFiles(layout);
@@ -502,46 +631,16 @@ test('restoration cannot rename external data through a replaced source ancestor
   fs.writeFileSync(externalFile, 'external');
   const externalIdentity = fs.lstatSync(externalDirectory, { bigint: true });
   const signal = path.join(homeDirectory, 'restore-source-interleaved');
-  const pythonExecutable = path.join(homeDirectory, 'restoration-race-python');
-  let quarantineContainer;
-  const originalRenameSync = fs.renameSync;
-  fs.renameSync = function interleaveRestoration(source, destination) {
-    if (destination === layout.cacheRoot && !fs.existsSync(signal)) {
-      originalRenameSync(quarantineContainer, `${quarantineContainer}-displaced`);
-      fs.symlinkSync(externalAncestor, quarantineContainer);
-      fs.writeFileSync(signal, 'interleaved');
-    }
-    return originalRenameSync(source, destination);
-  };
+  const pythonExecutable = restorationRacePython(homeDirectory, {
+    external: externalAncestor,
+    signal,
+  });
 
-  try {
-    await assert.rejects(
-      clean(layout, {
-        pythonExecutable,
-        beforeRemove() {
-          if (quarantineContainer !== undefined) return;
-          const quarantineName = fs
-            .readdirSync(layout.cacheNamespaceRoot)
-            .find(name => name.startsWith('.parakeet-runtime-clean-'));
-          assert.notEqual(quarantineName, undefined);
-          quarantineContainer = path.join(layout.cacheNamespaceRoot, quarantineName);
-          restorationRacePython(homeDirectory, {
-            ancestor: quarantineContainer,
-            displaced: `${quarantineContainer}-displaced`,
-            external: externalAncestor,
-            signal,
-          });
-        },
-      })
-    );
-  } finally {
-    fs.renameSync = originalRenameSync;
-  }
+  await assert.rejects(clean(layout, { pythonExecutable }));
 
-  assert.equal(fs.readFileSync(signal, 'utf8'), 'interleaved');
   assert.equal(fs.readFileSync(externalFile, 'utf8'), 'external');
   assert.equal(fs.lstatSync(externalDirectory, { bigint: true }).ino, externalIdentity.ino);
-  assert.equal(fs.readFileSync(path.join(layout.cacheRoot, 'keep.txt'), 'utf8'), 'keep');
+  assert.equal(fs.readFileSync(retainedOwnedCacheFile(layout, 'keep.txt'), 'utf8'), 'keep');
 });
 
 test('restoration cannot overwrite an external directory through a replaced destination parent', async t => {
@@ -562,22 +661,11 @@ test('restoration cannot overwrite an external directory through a replaced dest
     external: externalParent,
     signal,
   });
-  const originalRenameSync = fs.renameSync;
-  fs.renameSync = function interleaveRestoration(source, destination) {
-    if (destination === layout.cacheRoot && !fs.existsSync(signal)) {
-      originalRenameSync(cacheParent, displacedParent);
-      fs.symlinkSync(externalParent, cacheParent);
-      fs.writeFileSync(signal, 'interleaved');
-    }
-    return originalRenameSync(source, destination);
-  };
   let cleanupError;
   try {
     await clean(layout, { pythonExecutable });
   } catch (error) {
     cleanupError = error;
-  } finally {
-    fs.renameSync = originalRenameSync;
   }
 
   assert.equal(fs.readFileSync(signal, 'utf8'), 'interleaved');
@@ -590,12 +678,11 @@ test('restoration cannot overwrite an external directory through a replaced dest
   assert.ok(cleanupError, 'a replaced destination parent must be reported');
 });
 
-test('clean cannot unlink through an interleaved quarantine-ancestor replacement', async t => {
+test('clean refuses an unsafe quarantined owned-cache replacement', async t => {
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);
   writeGeneratedFiles(layout);
-  const retainedFile = path.join(layout.cacheRoot, 'keep.txt');
-  fs.writeFileSync(retainedFile, 'keep');
+  fs.writeFileSync(path.join(layout.cacheRoot, 'keep.txt'), 'keep');
 
   const replacementTarget = path.join(homeDirectory, 'quarantine-entry-target');
   fs.mkdirSync(replacementTarget);
@@ -604,63 +691,37 @@ test('clean cannot unlink through an interleaved quarantine-ancestor replacement
   fs.mkdirSync(externalAncestor);
   fs.writeFileSync(externalFile, 'external');
 
-  const originalLstatSync = fs.lstatSync;
   const signal = path.join(homeDirectory, 'leftover-stat-interleaved');
-  const pythonExecutable = path.join(homeDirectory, 'restoration-race-python');
+  const pythonExecutable = restorationRacePython(homeDirectory, {
+    phase: 'leftover-stat',
+    external: externalAncestor,
+    signal,
+  });
   let quarantineContainer;
-  let ancestorReplaced = false;
 
-  fs.lstatSync = function interleaveQuarantineAncestor(filePath, options) {
-    const result = originalLstatSync(filePath, options);
-    if (
-      !ancestorReplaced &&
-      quarantineContainer !== undefined &&
-      filePath === path.join(quarantineContainer, 'owned-cache') &&
-      result.isSymbolicLink() &&
-      fs.existsSync(layout.cacheRoot)
-    ) {
-      ancestorReplaced = true;
-      fs.renameSync(quarantineContainer, `${quarantineContainer}-displaced`);
-      fs.symlinkSync(externalAncestor, quarantineContainer);
-      fs.writeFileSync(signal, 'interleaved');
-    }
-    return result;
-  };
+  await assert.rejects(
+    clean(layout, {
+      pythonExecutable,
+      beforeRemove() {
+        if (quarantineContainer !== undefined) return;
+        const quarantineName = fs
+          .readdirSync(layout.cacheNamespaceRoot)
+          .find(name => name.startsWith('.parakeet-runtime-clean-'));
+        assert.notEqual(quarantineName, undefined);
+        quarantineContainer = path.join(layout.cacheNamespaceRoot, quarantineName);
+        const ownedCache = path.join(quarantineContainer, 'owned-cache');
+        fs.renameSync(ownedCache, path.join(quarantineContainer, 'displaced-owned-cache'));
+        fs.symlinkSync(replacementTarget, ownedCache);
+      },
+    })
+  );
 
-  try {
-    await assert.rejects(
-      clean(layout, {
-        pythonExecutable,
-        beforeRemove() {
-          if (quarantineContainer !== undefined) return;
-          const quarantineName = fs
-            .readdirSync(layout.cacheNamespaceRoot)
-            .find(name => name.startsWith('.parakeet-runtime-clean-'));
-          assert.notEqual(quarantineName, undefined);
-          quarantineContainer = path.join(layout.cacheNamespaceRoot, quarantineName);
-          restorationRacePython(homeDirectory, {
-            phase: 'leftover-stat',
-            cacheRoot: layout.cacheRoot,
-            ancestor: quarantineContainer,
-            displaced: `${quarantineContainer}-displaced`,
-            external: externalAncestor,
-            signal,
-          });
-          const ownedCache = path.join(quarantineContainer, 'owned-cache');
-          fs.renameSync(ownedCache, path.join(quarantineContainer, 'displaced-owned-cache'));
-          fs.symlinkSync(replacementTarget, ownedCache);
-        },
-      })
-    );
-  } finally {
-    fs.lstatSync = originalLstatSync;
-  }
-
-  assert.equal(fs.readFileSync(signal, 'utf8'), 'interleaved');
   assert.equal(fs.readFileSync(externalFile, 'utf8'), 'external');
-  assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'keep');
+  assert.equal(fs.readFileSync(retainedOwnedCacheFile(layout, 'keep.txt'), 'utf8'), 'keep');
   assert.equal(
-    fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
+    fs.existsSync(
+      retainedOwnedCacheFile(layout, '.wasper-parakeet-runtime-benchmark-owner.json')
+    ),
     true
   );
 });

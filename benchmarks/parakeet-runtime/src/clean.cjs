@@ -1,10 +1,9 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
-const { execFile } = require('node:child_process');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { isDeepStrictEqual, promisify } = require('node:util');
+const { isDeepStrictEqual } = require('node:util');
 
 const {
   OWNER_FILE,
@@ -22,7 +21,6 @@ const CLEAN_PYTHON_ENV = Object.freeze({
   PATH: '/usr/bin:/bin',
   PYTHONHASHSEED: '0',
 });
-const execFileAsync = promisify(execFile);
 const LAYOUT_FIELDS = Object.freeze([
   'packageRoot',
   'repositoryRoot',
@@ -161,28 +159,31 @@ function trustedPython() {
   return executable;
 }
 
-async function runDescriptorHelper(pythonExecutable, arguments_) {
+function runDescriptorHelper(pythonExecutable, arguments_, descriptors) {
   if (typeof pythonExecutable !== 'string' || !path.isAbsolute(pythonExecutable)) {
     throw new Error('benchmark cleanup requires an absolute Python executable');
   }
-  let stdout;
-  try {
-    ({ stdout } = await execFileAsync(
-      pythonExecutable,
-      ['-I', '-S', '-B', DELETE_HELPER, ...arguments_],
-      {
-        cwd: '/',
-        encoding: 'utf8',
-        env: CLEAN_PYTHON_ENV,
-        maxBuffer: 1024 * 1024,
-      }
-    ));
-  } catch (error) {
-    const detail = error?.stderr?.trim();
-    throw new Error(detail || 'descriptor-relative benchmark cleanup failed', { cause: error });
+  const result = childProcess.spawnSync(
+    pythonExecutable,
+    ['-I', '-S', '-B', DELETE_HELPER, ...arguments_],
+    {
+      cwd: '/',
+      encoding: 'utf8',
+      env: CLEAN_PYTHON_ENV,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe', ...descriptors],
+    }
+  );
+  if (result.error) {
+    throw new Error(`descriptor-relative benchmark cleanup failed: ${result.error.message}`, {
+      cause: result.error,
+    });
+  }
+  if (result.status !== 0) {
+    throw new Error(result.stderr?.trim() || 'descriptor-relative benchmark cleanup failed');
   }
   try {
-    return JSON.parse(stdout);
+    return JSON.parse(result.stdout);
   } catch (error) {
     throw new Error('descriptor-relative benchmark cleanup returned invalid output', {
       cause: error,
@@ -190,24 +191,113 @@ async function runDescriptorHelper(pythonExecutable, arguments_) {
   }
 }
 
-async function restoreQuarantinedCache({
+function childName(name, label) {
+  if (!name || name === '.' || name === '..' || path.basename(name) !== name) {
+    throw new Error(`${label} must be a single path component`);
+  }
+  return name;
+}
+
+function cacheParentRelative(namespaceRoot, cacheParent) {
+  const relative = path.relative(namespaceRoot, cacheParent);
+  if (relative === '') return '.';
+  if (relative === '..' || relative.startsWith(`..${path.sep}`)) {
+    throw new Error('benchmark cache parent escapes its namespace');
+  }
+  for (const name of relative.split(path.sep)) childName(name, 'benchmark cache parent component');
+  return relative;
+}
+
+function openPinnedDirectory(directory, expectedIdentity, label) {
+  const before = fs.lstatSync(directory, { bigint: true });
+  if (!before.isDirectory() || before.isSymbolicLink() || !sameIdentity(before, expectedIdentity)) {
+    throw new Error(`${label} changed identity before cleanup`);
+  }
+  const descriptor = fs.openSync(
+    directory,
+    fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW
+  );
+  try {
+    const actual = fs.fstatSync(descriptor, { bigint: true });
+    if (!actual.isDirectory() || !sameIdentity(actual, expectedIdentity)) {
+      throw new Error(`${label} changed identity before cleanup`);
+    }
+    return descriptor;
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
+  }
+}
+
+function quarantineCache({
   cacheRoot,
-  cacheParent,
   cacheParentIdentity,
+  cacheParentRelative,
   expectedIdentity,
-  namespaceRoot,
+  namespaceDescriptor,
   namespaceIdentity,
-  quarantineContainer,
+  pythonExecutable,
+}) {
+  const result = runDescriptorHelper(
+    pythonExecutable,
+    [
+      'quarantine-cache',
+      '--namespace-device',
+      namespaceIdentity.dev.toString(),
+      '--namespace-inode',
+      namespaceIdentity.ino.toString(),
+      '--cache-parent-relative',
+      cacheParentRelative,
+      '--cache-parent-device',
+      cacheParentIdentity.dev.toString(),
+      '--cache-parent-inode',
+      cacheParentIdentity.ino.toString(),
+      '--cache-name',
+      path.basename(cacheRoot),
+      '--cache-device',
+      expectedIdentity.dev.toString(),
+      '--cache-inode',
+      expectedIdentity.ino.toString(),
+      '--cache-root',
+      cacheRoot,
+    ],
+    [namespaceDescriptor]
+  );
+  if (
+    result === null ||
+    typeof result !== 'object' ||
+    typeof result.containerName !== 'string' ||
+    !/^[0-9]+$/u.test(result.containerDevice) ||
+    !/^[0-9]+$/u.test(result.containerInode)
+  ) {
+    throw new Error('descriptor-relative benchmark quarantine returned invalid output');
+  }
+  return {
+    name: childName(result.containerName, 'quarantine container name'),
+    identity: {
+      dev: BigInt(result.containerDevice),
+      ino: BigInt(result.containerInode),
+    },
+  };
+}
+
+function restoreQuarantinedCache({
+  cacheRoot,
+  cacheParentIdentity,
+  cacheParentRelative,
+  expectedIdentity,
+  namespaceDescriptor,
+  namespaceIdentity,
   quarantineIdentity,
-  quarantineRoot,
+  quarantineName,
   pythonExecutable,
 }) {
   let result;
   try {
-    result = await runDescriptorHelper(pythonExecutable, [
+    result = runDescriptorHelper(pythonExecutable, [
       'restore-cache',
-      '--cache-parent',
-      cacheParent,
+      '--cache-parent-relative',
+      cacheParentRelative,
       '--cache-parent-device',
       cacheParentIdentity.dev.toString(),
       '--cache-parent-inode',
@@ -220,19 +310,17 @@ async function restoreQuarantinedCache({
       expectedIdentity.dev.toString(),
       '--cache-inode',
       expectedIdentity.ino.toString(),
-      '--namespace',
-      namespaceRoot,
       '--namespace-device',
       namespaceIdentity.dev.toString(),
       '--namespace-inode',
       namespaceIdentity.ino.toString(),
       '--container-name',
-      path.basename(quarantineContainer),
+      quarantineName,
       '--container-device',
       quarantineIdentity.dev.toString(),
       '--container-inode',
       quarantineIdentity.ino.toString(),
-    ]);
+    ], [namespaceDescriptor]);
     if (
       result === null ||
       typeof result !== 'object' ||
@@ -244,7 +332,7 @@ async function restoreQuarantinedCache({
       throw new Error('descriptor-relative benchmark restoration returned invalid output');
     }
   } catch (error) {
-    return new Error(`could not restore owned benchmark cache from ${quarantineRoot}`, {
+    return new Error('could not restore owned benchmark cache from quarantine', {
       cause: error,
     });
   }
@@ -258,16 +346,31 @@ async function restoreQuarantinedCache({
   return null;
 }
 
-async function deleteWithDirectoryDescriptors({ pythonExecutable, quarantineRoot, identity }) {
-  const result = await runDescriptorHelper(pythonExecutable, [
+function deleteWithDirectoryDescriptors({
+  pythonExecutable,
+  namespaceDescriptor,
+  namespaceIdentity,
+  quarantineIdentity,
+  quarantineName,
+  identity,
+}) {
+  const result = runDescriptorHelper(pythonExecutable, [
     'delete-generated',
-    '--root',
-    quarantineRoot,
-    '--device',
+    '--namespace-device',
+    namespaceIdentity.dev.toString(),
+    '--namespace-inode',
+    namespaceIdentity.ino.toString(),
+    '--container-name',
+    quarantineName,
+    '--container-device',
+    quarantineIdentity.dev.toString(),
+    '--container-inode',
+    quarantineIdentity.ino.toString(),
+    '--cache-device',
     identity.dev.toString(),
-    '--inode',
+    '--cache-inode',
     identity.ino.toString(),
-  ]);
+  ], [namespaceDescriptor]);
   if (
     result === null ||
     typeof result !== 'object' ||
@@ -291,74 +394,69 @@ async function clean(layout, { beforeRemove, pythonExecutable = trustedPython() 
   const cacheParent = path.dirname(cacheRoot);
   const cacheParentIdentity = fs.lstatSync(cacheParent, { bigint: true });
   const namespaceIdentity = fs.lstatSync(resolvedLayout.cacheNamespaceRoot, { bigint: true });
-
-  const quarantineContainer = fs.mkdtempSync(
-    path.join(resolvedLayout.cacheNamespaceRoot, `.parakeet-runtime-clean-${randomUUID()}-`)
-  );
-  const quarantineIdentity = fs.lstatSync(quarantineContainer, { bigint: true });
-  const quarantineRoot = path.join(quarantineContainer, 'owned-cache');
-  fs.renameSync(cacheRoot, quarantineRoot);
-
-  const removed = [];
-  let cleanupError = null;
-  try {
-    const movedStat = fs.lstatSync(quarantineRoot, { bigint: true });
-    if (
-      !movedStat.isDirectory() ||
-      movedStat.isSymbolicLink() ||
-      !sameIdentity(movedStat, expectedIdentity)
-    ) {
-      throw new Error('quarantined benchmark cache must be a real directory');
-    }
-    const resolvedQuarantineRoot = fs.realpathSync.native(quarantineRoot);
-    if (resolvedQuarantineRoot !== quarantineRoot) {
-      throw new Error('quarantined benchmark cache changed after move');
-    }
-    readOwnershipMarker(resolvedQuarantineRoot, cacheRoot);
-    const quarantinedRoots = cleanupRoots(resolvedQuarantineRoot);
-    const plannedNames = plannedRoots.map(root => root.name);
-    const quarantinedNames = quarantinedRoots.map(root => root.name);
-    if (!isDeepStrictEqual(quarantinedNames, plannedNames)) {
-      throw new Error('generated cleanup directories changed during quarantine');
-    }
-    for (const name of plannedNames) {
-      beforeRemove?.(path.join(cacheRoot, name));
-    }
-    const removedNames = await deleteWithDirectoryDescriptors({
-      pythonExecutable,
-      quarantineRoot,
-      identity: expectedIdentity,
-    });
-    if (!isDeepStrictEqual(removedNames, plannedNames)) {
-      throw new Error(
-        'generated cleanup directories changed during descriptor-relative deletion'
-      );
-    }
-    for (const name of removedNames) {
-      removed.push(path.join(cacheRoot, name));
-    }
-  } catch (error) {
-    cleanupError = error;
-  }
-
-  const restoreError = await restoreQuarantinedCache({
-    cacheRoot,
-    cacheParent,
-    cacheParentIdentity,
-    expectedIdentity,
-    namespaceRoot: resolvedLayout.cacheNamespaceRoot,
+  const parentRelative = cacheParentRelative(resolvedLayout.cacheNamespaceRoot, cacheParent);
+  const namespaceDescriptor = openPinnedDirectory(
+    resolvedLayout.cacheNamespaceRoot,
     namespaceIdentity,
-    quarantineContainer,
-    quarantineIdentity,
-    quarantineRoot,
-    pythonExecutable,
-  });
-  if (restoreError !== null) {
-    if (cleanupError !== null) restoreError.cause = cleanupError;
-    throw restoreError;
+    'benchmark cache namespace'
+  );
+  try {
+    const quarantine = quarantineCache({
+      cacheRoot,
+      cacheParentIdentity,
+      cacheParentRelative: parentRelative,
+      expectedIdentity,
+      namespaceDescriptor,
+      namespaceIdentity,
+      pythonExecutable,
+    });
+    const removed = [];
+    let cleanupError = null;
+    try {
+      const plannedNames = plannedRoots.map(root => root.name);
+      for (const name of plannedNames) {
+        beforeRemove?.(path.join(cacheRoot, name));
+      }
+      const removedNames = deleteWithDirectoryDescriptors({
+        pythonExecutable,
+        namespaceDescriptor,
+        namespaceIdentity,
+        quarantineIdentity: quarantine.identity,
+        quarantineName: quarantine.name,
+        identity: expectedIdentity,
+      });
+      if (!isDeepStrictEqual(removedNames, plannedNames)) {
+        throw new Error(
+          'generated cleanup directories changed during descriptor-relative deletion'
+        );
+      }
+      for (const name of removedNames) {
+        removed.push(path.join(cacheRoot, name));
+      }
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    const restoreError = restoreQuarantinedCache({
+      cacheRoot,
+      cacheParentIdentity,
+      cacheParentRelative: parentRelative,
+      expectedIdentity,
+      namespaceDescriptor,
+      namespaceIdentity,
+      quarantineIdentity: quarantine.identity,
+      quarantineName: quarantine.name,
+      pythonExecutable,
+    });
+    if (restoreError !== null) {
+      if (cleanupError !== null) restoreError.cause = cleanupError;
+      throw restoreError;
+    }
+    if (cleanupError !== null) throw cleanupError;
+    return removed;
+  } finally {
+    fs.closeSync(namespaceDescriptor);
   }
-  if (cleanupError !== null) throw cleanupError;
-  return removed;
 }
 
 module.exports = { clean };

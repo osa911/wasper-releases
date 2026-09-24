@@ -7,12 +7,14 @@ import json
 import os
 import stat
 import sys
+import uuid
 
 
 CLEANUP_DIRECTORY_NAMES = ("artifacts", "corpus", "holders", "runs")
 DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 OWNER_FILE = ".wasper-parakeet-runtime-benchmark-owner.json"
+NAMESPACE_DESCRIPTOR = 3
 
 
 class UnsafeCleanupError(RuntimeError):
@@ -46,42 +48,69 @@ def open_directory_at(parent_fd, name, expected_stat, label):
     return descriptor
 
 
-def delete_entry(parent_fd, name, label):
-    try:
-        entry_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return
+def create_deletion_handoff(parent_fd):
+    for _ in range(128):
+        name = f".wasper-parakeet-delete-{uuid.uuid4().hex}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        handoff_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        handoff_fd = open_directory_at(
+            parent_fd,
+            name,
+            handoff_stat,
+            "generated deletion handoff",
+        )
+        return name, handoff_stat, handoff_fd
+    raise UnsafeCleanupError("could not allocate a generated deletion handoff")
 
+
+def delete_entry(parent_fd, name, label, expected_stat=None):
+    try:
+        entry_stat = expected_stat or os.stat(
+            name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return False
     if stat.S_ISLNK(entry_stat.st_mode):
         raise UnsafeCleanupError(f"{label} is a symlink")
+    if not stat.S_ISDIR(entry_stat.st_mode) and not stat.S_ISREG(entry_stat.st_mode):
+        raise UnsafeCleanupError(f"{label} has an unsupported file type")
 
-    if stat.S_ISDIR(entry_stat.st_mode):
-        descriptor = open_directory_at(parent_fd, name, entry_stat, label)
-        try:
-            for child_name in os.listdir(descriptor):
-                delete_entry(descriptor, child_name, f"{label}/{child_name}")
-            current_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            require_same_identity(entry_stat, current_stat, label)
-            os.rmdir(name, dir_fd=parent_fd)
-        finally:
-            os.close(descriptor)
-        return
-
-    if stat.S_ISREG(entry_stat.st_mode):
-        try:
-            descriptor = os.open(name, FILE_OPEN_FLAGS, dir_fd=parent_fd)
-        except OSError as error:
-            raise UnsafeCleanupError(f"{label} is not a stable regular file") from error
-        try:
-            require_same_identity(entry_stat, os.fstat(descriptor), label)
-            current_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            require_same_identity(entry_stat, current_stat, label)
-            os.unlink(name, dir_fd=parent_fd)
-        finally:
-            os.close(descriptor)
-        return
-
-    raise UnsafeCleanupError(f"{label} has an unsupported file type")
+    handoff_name, handoff_stat, handoff_fd = create_deletion_handoff(parent_fd)
+    try:
+        os.rename(
+            name,
+            "owned-entry",
+            src_dir_fd=parent_fd,
+            dst_dir_fd=handoff_fd,
+        )
+        moved_stat = os.stat("owned-entry", dir_fd=handoff_fd, follow_symlinks=False)
+        require_same_identity(entry_stat, moved_stat, label)
+        if stat.S_ISDIR(moved_stat.st_mode):
+            descriptor = open_directory_at(handoff_fd, "owned-entry", moved_stat, label)
+            try:
+                for child_name in os.listdir(descriptor):
+                    delete_entry(descriptor, child_name, f"{label}/{child_name}")
+                os.rmdir("owned-entry", dir_fd=handoff_fd)
+            finally:
+                os.close(descriptor)
+        else:
+            descriptor = os.open("owned-entry", FILE_OPEN_FLAGS, dir_fd=handoff_fd)
+            try:
+                require_same_identity(moved_stat, os.fstat(descriptor), label)
+                os.unlink("owned-entry", dir_fd=handoff_fd)
+            finally:
+                os.close(descriptor)
+        current_handoff_stat = os.stat(handoff_name, dir_fd=parent_fd, follow_symlinks=False)
+        require_same_identity(handoff_stat, current_handoff_stat, "generated deletion handoff")
+        os.rmdir(handoff_name, dir_fd=parent_fd)
+    finally:
+        os.close(handoff_fd)
+    return True
 
 
 def delete_generated_directory(root_fd, name):
@@ -91,49 +120,57 @@ def delete_generated_directory(root_fd, name):
         return False
     if not stat.S_ISDIR(directory_stat.st_mode) or stat.S_ISLNK(directory_stat.st_mode):
         raise UnsafeCleanupError(f"generated directory {name} is not a real directory")
-
-    descriptor = open_directory_at(root_fd, name, directory_stat, f"generated directory {name}")
-    try:
-        for child_name in os.listdir(descriptor):
-            delete_entry(descriptor, child_name, f"{name}/{child_name}")
-        current_stat = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-        require_same_identity(directory_stat, current_stat, f"generated directory {name}")
-        os.rmdir(name, dir_fd=root_fd)
-    finally:
-        os.close(descriptor)
-    return True
+    return delete_entry(root_fd, name, f"generated directory {name}", directory_stat)
 
 
-def open_validated_directory(path, device, inode, label):
-    try:
-        descriptor = os.open(path, DIRECTORY_OPEN_FLAGS)
-    except OSError as error:
-        raise UnsafeCleanupError(f"{label} is not a stable real directory") from error
-    try:
-        actual_stat = os.fstat(descriptor)
-        if identity(actual_stat) != (device, inode):
-            raise UnsafeCleanupError(f"{label} changed identity before cleanup")
-    except Exception:
-        os.close(descriptor)
-        raise
-    return descriptor
+def inherited_namespace(arguments):
+    namespace_stat = os.fstat(NAMESPACE_DESCRIPTOR)
+    if not stat.S_ISDIR(namespace_stat.st_mode) or identity(namespace_stat) != (
+        arguments.namespace_device,
+        arguments.namespace_inode,
+    ):
+        raise UnsafeCleanupError("benchmark cache namespace changed identity before cleanup")
+    return NAMESPACE_DESCRIPTOR
 
 
 def delete_generated(arguments):
-    root_fd = open_validated_directory(
-        arguments.root,
-        arguments.device,
-        arguments.inode,
-        "quarantined owned cache",
+    namespace_fd = inherited_namespace(arguments)
+    expected_container_stat = os.stat(
+        arguments.container_name,
+        dir_fd=namespace_fd,
+        follow_symlinks=False,
     )
-    removed = []
+    if identity(expected_container_stat) != (
+        arguments.container_device,
+        arguments.container_inode,
+    ):
+        raise UnsafeCleanupError("quarantine container changed identity before cleanup")
+    container_fd = open_directory_at(
+        namespace_fd,
+        arguments.container_name,
+        expected_container_stat,
+        "quarantine container",
+    )
     try:
-        for name in CLEANUP_DIRECTORY_NAMES:
-            if delete_generated_directory(root_fd, name):
-                removed.append(name)
+        root_stat = os.stat("owned-cache", dir_fd=container_fd, follow_symlinks=False)
+        if identity(root_stat) != (arguments.cache_device, arguments.cache_inode):
+            raise UnsafeCleanupError("quarantined owned cache changed identity before cleanup")
+        root_fd = open_directory_at(
+            container_fd,
+            "owned-cache",
+            root_stat,
+            "quarantined owned cache",
+        )
+        try:
+            removed = []
+            for name in CLEANUP_DIRECTORY_NAMES:
+                if delete_generated_directory(root_fd, name):
+                    removed.append(name)
+            return {"removed": removed}
+        finally:
+            os.close(root_fd)
     finally:
-        os.close(root_fd)
-    return {"removed": removed}
+        os.close(container_fd)
 
 
 def remove_symlink_at(parent_fd, name):
@@ -167,8 +204,11 @@ def validate_marker_at(root_fd, cache_root):
 
 
 def open_cache_parent(arguments, namespace_fd, descriptors):
-    relative_parent = os.path.relpath(arguments.cache_parent, arguments.namespace)
-    names = [] if relative_parent == "." else relative_parent.split(os.sep)
+    names = (
+        []
+        if arguments.cache_parent_relative == "."
+        else arguments.cache_parent_relative.split(os.sep)
+    )
     parent_fd = namespace_fd
     bindings = []
     for name in names:
@@ -186,6 +226,57 @@ def open_cache_parent(arguments, namespace_fd, descriptors):
     return parent_fd, bindings
 
 
+def create_quarantine_container(namespace_fd):
+    for _ in range(128):
+        name = f".parakeet-runtime-clean-{uuid.uuid4().hex}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=namespace_fd)
+        except FileExistsError:
+            continue
+        container_stat = os.stat(name, dir_fd=namespace_fd, follow_symlinks=False)
+        return name, container_stat
+    raise UnsafeCleanupError("could not allocate a quarantine container")
+
+
+def quarantine_cache(arguments):
+    require_child_name(arguments.cache_name, "cache name")
+    namespace_fd = inherited_namespace(arguments)
+    with ExitStack() as descriptors:
+        cache_parent_fd, _ = open_cache_parent(arguments, namespace_fd, descriptors)
+        source_stat = os.stat(
+            arguments.cache_name,
+            dir_fd=cache_parent_fd,
+            follow_symlinks=False,
+        )
+        if identity(source_stat) != (arguments.cache_device, arguments.cache_inode):
+            raise UnsafeCleanupError("benchmark cache root changed identity before quarantine")
+        container_name, container_stat = create_quarantine_container(namespace_fd)
+        container_fd = open_directory_at(
+            namespace_fd,
+            container_name,
+            container_stat,
+            "quarantine container",
+        )
+        descriptors.callback(os.close, container_fd)
+        os.rename(
+            arguments.cache_name,
+            "owned-cache",
+            src_dir_fd=cache_parent_fd,
+            dst_dir_fd=container_fd,
+        )
+        moved_stat = os.stat("owned-cache", dir_fd=container_fd, follow_symlinks=False)
+        if identity(moved_stat) != (arguments.cache_device, arguments.cache_inode):
+            raise UnsafeCleanupError("benchmark cache root changed identity during quarantine")
+        owned_fd = open_directory_at(container_fd, "owned-cache", moved_stat, "owned cache")
+        descriptors.callback(os.close, owned_fd)
+        validate_marker_at(owned_fd, arguments.cache_root)
+        return {
+            "containerName": container_name,
+            "containerDevice": str(container_stat.st_dev),
+            "containerInode": str(container_stat.st_ino),
+        }
+
+
 def validate_parent_bindings(bindings):
     for parent_fd, name, expected_stat in bindings:
         current_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -199,13 +290,7 @@ def restore_cache(arguments):
     # Keep every parent descriptor open through discovery, rename, and cleanup.
     # In particular, the destination parent can be nested below the namespace.
     with ExitStack() as descriptors:
-        namespace_fd = open_validated_directory(
-            arguments.namespace,
-            arguments.namespace_device,
-            arguments.namespace_inode,
-            "benchmark cache namespace",
-        )
-        descriptors.callback(os.close, namespace_fd)
+        namespace_fd = inherited_namespace(arguments)
         cache_parent_fd, parent_bindings = open_cache_parent(arguments, namespace_fd, descriptors)
         expected_container_stat = os.stat(
             arguments.container_name,
@@ -290,24 +375,38 @@ def parse_arguments():
     subparsers = parser.add_subparsers(dest="operation", required=True)
 
     delete_parser = subparsers.add_parser("delete-generated")
-    delete_parser.add_argument("--root", required=True)
-    delete_parser.add_argument("--device", required=True, type=int)
-    delete_parser.add_argument("--inode", required=True, type=int)
+    delete_parser.add_argument("--namespace-device", required=True, type=int)
+    delete_parser.add_argument("--namespace-inode", required=True, type=int)
+    delete_parser.add_argument("--container-name", required=True)
+    delete_parser.add_argument("--container-device", required=True, type=int)
+    delete_parser.add_argument("--container-inode", required=True, type=int)
+    delete_parser.add_argument("--cache-device", required=True, type=int)
+    delete_parser.add_argument("--cache-inode", required=True, type=int)
 
-    quarantine_parser = subparsers.add_parser("restore-cache")
-    quarantine_parser.add_argument("--cache-parent", required=True)
+    quarantine_parser = subparsers.add_parser("quarantine-cache")
+    quarantine_parser.add_argument("--namespace-device", required=True, type=int)
+    quarantine_parser.add_argument("--namespace-inode", required=True, type=int)
+    quarantine_parser.add_argument("--cache-parent-relative", required=True)
     quarantine_parser.add_argument("--cache-parent-device", required=True, type=int)
     quarantine_parser.add_argument("--cache-parent-inode", required=True, type=int)
-    quarantine_parser.add_argument("--cache-root", required=True)
     quarantine_parser.add_argument("--cache-name", required=True)
     quarantine_parser.add_argument("--cache-device", required=True, type=int)
     quarantine_parser.add_argument("--cache-inode", required=True, type=int)
-    quarantine_parser.add_argument("--namespace", required=True)
-    quarantine_parser.add_argument("--namespace-device", required=True, type=int)
-    quarantine_parser.add_argument("--namespace-inode", required=True, type=int)
-    quarantine_parser.add_argument("--container-name", required=True)
-    quarantine_parser.add_argument("--container-device", required=True, type=int)
-    quarantine_parser.add_argument("--container-inode", required=True, type=int)
+    quarantine_parser.add_argument("--cache-root", required=True)
+
+    restore_parser = subparsers.add_parser("restore-cache")
+    restore_parser.add_argument("--cache-parent-relative", required=True)
+    restore_parser.add_argument("--cache-parent-device", required=True, type=int)
+    restore_parser.add_argument("--cache-parent-inode", required=True, type=int)
+    restore_parser.add_argument("--cache-root", required=True)
+    restore_parser.add_argument("--cache-name", required=True)
+    restore_parser.add_argument("--cache-device", required=True, type=int)
+    restore_parser.add_argument("--cache-inode", required=True, type=int)
+    restore_parser.add_argument("--namespace-device", required=True, type=int)
+    restore_parser.add_argument("--namespace-inode", required=True, type=int)
+    restore_parser.add_argument("--container-name", required=True)
+    restore_parser.add_argument("--container-device", required=True, type=int)
+    restore_parser.add_argument("--container-inode", required=True, type=int)
     return parser.parse_args()
 
 
@@ -315,6 +414,7 @@ def main():
     arguments = parse_arguments()
     operations = {
         "delete-generated": delete_generated,
+        "quarantine-cache": quarantine_cache,
         "restore-cache": restore_cache,
     }
     sys.stdout.write(json.dumps(operations[arguments.operation](arguments)) + "\n")

@@ -209,6 +209,22 @@ function ownedRuntimeStorage(supplied, { create = true } = {}) {
     return file;
   }
 
+  function moveTrackedPaths(entries, from, to) {
+    for (const [trackedPath, trackedIdentity] of [...entries]) {
+      if (trackedPath !== from && !trackedPath.startsWith(`${from}${path.sep}`)) continue;
+      entries.delete(trackedPath);
+      entries.set(`${to}${trackedPath.slice(from.length)}`, trackedIdentity);
+    }
+  }
+
+  function forgetTrackedPaths(entries, target) {
+    for (const trackedPath of entries.keys()) {
+      if (trackedPath === target || trackedPath.startsWith(`${target}${path.sep}`)) {
+        entries.delete(trackedPath);
+      }
+    }
+  }
+
   function hashFile(file) {
     const before = regular(file);
     const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -321,11 +337,8 @@ function ownedRuntimeStorage(supplied, { create = true } = {}) {
       fs.closeSync(destinationDescriptor);
       fs.closeSync(sourceDescriptor);
     }
-    for (const directoryPath of [...directories.keys()]) {
-      if (directoryPath === from || directoryPath.startsWith(`${from}${path.sep}`)) {
-        directories.delete(directoryPath);
-      }
-    }
+    moveTrackedPaths(directories, from, to);
+    moveTrackedPaths(files, from, to);
     check();
     remember(to);
   }
@@ -352,36 +365,51 @@ function ownedRuntimeStorage(supplied, { create = true } = {}) {
   }
 
   function remove(file) {
-    const expected = regular(file);
+    const expected = files.get(file);
+    if (expected === undefined) throw new Error('runtime file was not tracked for cleanup');
+    if (identity(regular(file)) !== expected) {
+      throw new Error('runtime tracked file changed before cleanup');
+    }
+    const [device, inode] = expected.split(':');
     const descriptor = openDirectory(path.dirname(file));
     try {
       runOwnedHelper(
-        ['remove-file', path.basename(file), expected.dev.toString(), expected.ino.toString()],
+        ['remove-file', path.basename(file), device, inode],
         { descriptors: [descriptor] }
       );
     } finally {
       fs.closeSync(descriptor);
     }
-    files.delete(file);
+    forgetTrackedPaths(files, file);
     check();
   }
 
   function removeDirectory(target) {
+    const trackedIdentity = directories.get(target);
+    if (trackedIdentity === undefined) {
+      throw new Error('runtime directory was not tracked for cleanup');
+    }
     directory(target, false);
     const expected = fs.lstatSync(target);
-    if (!expected.isDirectory() || expected.isSymbolicLink()) {
+    if (
+      !expected.isDirectory() ||
+      expected.isSymbolicLink() ||
+      identity(expected) !== trackedIdentity
+    ) {
       throw new Error('runtime remove target must be a real directory');
     }
+    const [device, inode] = trackedIdentity.split(':');
     const descriptor = openDirectory(path.dirname(target));
     try {
       runOwnedHelper(
-        ['remove-directory', path.basename(target), expected.dev.toString(), expected.ino.toString()],
+        ['remove-directory', path.basename(target), device, inode],
         { descriptors: [descriptor] }
       );
     } finally {
       fs.closeSync(descriptor);
     }
-    directories.delete(target);
+    forgetTrackedPaths(directories, target);
+    forgetTrackedPaths(files, target);
     check();
   }
 

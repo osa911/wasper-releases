@@ -432,9 +432,9 @@ test('fails closed when static import findings exceed the limit', t => {
   const sourceDirectory = path.join(fixturePackage, 'src');
   fs.mkdirSync(sourceDirectory);
   writeSource(sourceDirectory, 'dense-imports.cjs', [
-    'require("./missing-one.cjs");\n',
-    'require("./missing-two.cjs");\n',
-    'module.require("./missing-three.cjs");\n',
+    ['require(', '"./missing-one.cjs"', ');\n'].join(''),
+    ['require(', '"./missing-two.cjs"', ');\n'].join(''),
+    ['module.', 'require(', '"./missing-three.cjs"', ');\n'].join(''),
   ]);
 
   assert.throws(

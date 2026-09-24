@@ -4,8 +4,6 @@ const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
 const Ajv = require('ajv');
 const { ownedRuntimeStorage } = require('../owned-runtime-storage.cjs');
 const { publicAuditPythonExecutable } = require('../../public-audit.cjs');
@@ -20,12 +18,13 @@ const {
   timedTextBlocks,
 } = require('../../asr-quality/long-corpus-preparation.cjs');
 
-const execute = promisify(execFile);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const SCHEMA = 'wasper.public-corpus-sources.v1';
 const REFERENCE_LIMIT = 8 * 1024 ** 2;
 const SOURCE_LIMIT = 2 * 1024 ** 3;
 const ARCHIVE_MEMBER_READER = path.join(__dirname, 'read-archive-member.py');
+const NORMALIZED_AUDIO_RUNNER = path.join(__dirname, 'run-normalized-audio.py');
+const NORMALIZED_AUDIO_OUTPUT_MARKER = '__WASPER_NORMALIZED_WAV_DESCRIPTOR__';
 const TRUSTED_PYTHON_ENV = Object.freeze({
   LANG: 'C',
   LC_ALL: 'C',
@@ -313,12 +312,69 @@ async function verifyWav(storage, wavPath, fixture) {
   return audio;
 }
 
+function runNormalizedAudioTransform(storage, stage, sourcePath, wavPath) {
+  const stageDescriptor = storage.openDirectory(stage);
+  const arguments_ = NORMALIZED_AUDIO_TRANSFORM.arguments.map(argument => {
+    if (argument === '{sourcePath}') return sourcePath;
+    if (argument === '{temporaryWavPath}') return NORMALIZED_AUDIO_OUTPUT_MARKER;
+    return argument;
+  });
+  return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      fs.closeSync(stageDescriptor);
+      if (error) reject(error);
+      else resolve();
+    };
+    try {
+      child = childProcess.spawn(
+        trustedPython(),
+        [
+          '-I',
+          '-S',
+          '-B',
+          NORMALIZED_AUDIO_RUNNER,
+          path.basename(wavPath),
+          ...arguments_,
+        ],
+        {
+          cwd: '/',
+          stdio: ['ignore', 'ignore', 'pipe', stageDescriptor],
+          timeout: 60 * 60_000,
+          killSignal: 'SIGKILL',
+        }
+      );
+    } catch (error) {
+      finish(error);
+      return;
+    }
+    let stderr = '';
+    child.stderr.on('data', chunk => {
+      stderr = (stderr + chunk.toString()).slice(-65536);
+    });
+    child.once('error', error => {
+      finish(error);
+    });
+    child.once('close', code => {
+      if (code === 0) {
+        finish();
+        return;
+      }
+      finish(new Error(`ffmpeg failed: ${stderr.trim() || String(code)}`));
+    });
+  });
+}
+
 async function prepareFixture(storage, fixture) {
   const part = path.join(storage.downloads, `${fixture.fixtureId}.part`);
   let stage;
   let wavPath;
   let failure;
   let published = false;
+  let publishedDirectory;
   try {
     storage.check();
     stage = storage.createTempDirectory(storage.downloads, `${fixture.fixtureId}-`);
@@ -355,21 +411,14 @@ async function prepareFixture(storage, fixture) {
     storage.writeExclusive(referencePath, text);
     wavPath = path.join(stage, 'normalized.wav');
     storage.check();
-    await execute(
-      NORMALIZED_AUDIO_TRANSFORM.tool,
-      NORMALIZED_AUDIO_TRANSFORM.arguments.map(argument => {
-        if (argument === '{sourcePath}') return sourcePath;
-        if (argument === '{temporaryWavPath}') return wavPath;
-        return argument;
-      }),
-      { timeout: 60 * 60_000, maxBuffer: 64 * 1024 }
-    );
+    await runNormalizedAudioTransform(storage, stage, sourcePath, wavPath);
     storage.check();
     storage.track(wavPath);
     const audio = await verifyWav(storage, wavPath, fixture);
     const destination = path.join(storage.fixtures, path.basename(stage));
     storage.check();
     storage.moveDirectory(stage, destination);
+    publishedDirectory = destination;
     published = true;
     const prefix = path.relative(storage.layout.corpusRoot, destination);
     return {
@@ -423,7 +472,7 @@ async function prepareFixture(storage, fixture) {
       }
     } else {
       for (const target of [...storage.files.keys()])
-        if (target.startsWith(`${stage}/`)) storage.files.delete(target);
+        if (target.startsWith(`${publishedDirectory}/`)) storage.files.delete(target);
     }
   }
 }

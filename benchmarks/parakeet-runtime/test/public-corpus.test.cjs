@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { execFileSync, spawnSync } = childProcess;
 const test = require('node:test');
 const { resolveLayout, OWNER_FILE } = require('../src/config.cjs');
 const { preparePublicCorpus } = require('../src/runtime/corpus/public-corpus.cjs');
@@ -131,17 +132,28 @@ async function failAfterFfmpegOutput(f, { replaceWithSymlink = false } = {}) {
     `#!${process.execPath}
 'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
 const output = args.pop();
-const result = spawnSync(${JSON.stringify(realFfmpeg)}, [...args, '-t', '0', '-abort_on', 'empty_output', output], { encoding: 'utf8' });
-const bytes = fs.statSync(output).size;
-fs.writeFileSync(${JSON.stringify(witness)}, JSON.stringify({ status: result.status, stderr: result.stderr, bytes }));
+const source = args[args.indexOf('-i') + 1];
+const outputPath = path.join(path.dirname(source), 'normalized.wav');
+const outputDescriptor = Number(path.basename(output));
+const descriptorOutput = output.startsWith('/dev/fd/') && Number.isInteger(outputDescriptor);
+const result = spawnSync(
+  ${JSON.stringify(realFfmpeg)},
+  [...args, '-t', '0', '-abort_on', 'empty_output', descriptorOutput ? 'pipe:1' : output],
+  descriptorOutput ? { stdio: ['ignore', 'pipe', 'pipe'] } : { encoding: 'utf8' }
+);
+if (descriptorOutput) fs.writeSync(outputDescriptor, result.stdout);
+const bytes = fs.statSync(outputPath).size;
+const stderr = descriptorOutput ? result.stderr.toString() : result.stderr;
+fs.writeFileSync(${JSON.stringify(witness)}, JSON.stringify({ status: result.status, stderr, bytes }));
 if (${replaceWithSymlink}) {
-  fs.renameSync(output, output + '.displaced');
-  fs.symlinkSync(${JSON.stringify(external)}, output);
+  fs.renameSync(outputPath, outputPath + '.displaced');
+  fs.symlinkSync(${JSON.stringify(external)}, outputPath);
 }
-process.stderr.write(result.stderr);
+process.stderr.write(stderr);
 process.exit(result.status);
 `,
     { mode: 0o700 }
@@ -158,7 +170,10 @@ process.exit(result.status);
   }
   const observed = JSON.parse(fs.readFileSync(witness, 'utf8'));
   assert.notEqual(observed.status, 0);
-  assert.ok(observed.bytes > 0, 'real FFmpeg created a nonempty normalized.wav before failing');
+  assert.ok(
+    observed.bytes > 0,
+    `real FFmpeg created a nonempty normalized.wav before failing: ${JSON.stringify(observed)}`
+  );
   assert.match(observed.stderr, /Output file is empty/);
   assert.ok(failure, 'normalization must reject');
   return { failure, observed, external };
@@ -195,6 +210,32 @@ test('post-output FFmpeg failure preserves its diagnostic when unsafe output cle
     true
   );
   assert.deepEqual(fs.readdirSync(path.join(f.layout.corpusRoot, 'fixtures')), []);
+});
+
+test('normalization does not write through a stage path swapped immediately before FFmpeg launches', async t => {
+  const f = await fixtureServer(t);
+  const external = path.join(f.root, 'external-stage');
+  fs.mkdirSync(external);
+  const sentinel = path.join(external, 'sentinel');
+  fs.writeFileSync(sentinel, 'unchanged');
+  let swapped = false;
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', function swapStageBeforeFfmpeg(command, args, options) {
+    if (args.some(argument => argument.endsWith('run-normalized-audio.py')) && !swapped) {
+      swapped = true;
+      assert.equal(args.at(-1), '__WASPER_NORMALIZED_WAV_DESCRIPTOR__');
+      const stage = path.dirname(args[args.indexOf('-i') + 1]);
+      fs.renameSync(stage, `${stage}.owned-before-swap`);
+      fs.symlinkSync(external, stage);
+    }
+    return spawn.call(this, command, args, options);
+  });
+
+  await assert.rejects(f.prepare(), /changed|symlink|cleanup/i);
+
+  assert.equal(swapped, true, 'the stage replacement must run at the FFmpeg launch boundary');
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
+  assert.equal(fs.existsSync(path.join(external, 'normalized.wav')), false);
 });
 
 test('downloads a short fixture without accepting long-source terms and publishes verified WAV metadata', async t => {
