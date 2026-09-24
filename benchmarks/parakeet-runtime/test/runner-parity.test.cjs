@@ -71,7 +71,7 @@ function runIdentity() {
   };
 }
 
-function fakeAdapterFactory(events) {
+function fakeAdapterFactory(events, { transcribeFailure } = {}) {
   let activeRuntime = null;
   const failedLongRequests = new Set();
   return runtime => {
@@ -110,7 +110,11 @@ function fakeAdapterFactory(events) {
         };
       },
       async sampleFootprint() {
-        return { phys_footprint_peak: 1024, physFootprintPeakBytes: 1024 };
+        events.push({ type: 'footprint', runtimeId: runtime.id });
+        return {
+          post_response_phys_footprint: 1024,
+          postResponsePhysicalFootprintBytes: 1024,
+        };
       },
       async warmup(fixture, requestOptions) {
         events.push({ type: 'warmup', runtimeId: runtime.id, fixtureId: fixture.id, requestOptions });
@@ -123,6 +127,8 @@ function fakeAdapterFactory(events) {
           fixtureId: fixture.id,
           requestOptions,
         });
+        const failure = transcribeFailure?.({ runtime, fixture });
+        if (failure !== undefined) return failure;
         if (
           runtime.id === RUNTIME_DESCRIPTORS[0].id &&
           fixture.cohort === 'long' &&
@@ -181,6 +187,81 @@ test('runner preserves sequential automatic-language three-pass timing and parti
   }
   assert.equal(fs.existsSync(path.join(run.runDirectory, 'public-evidence.json')), true);
   assert.equal(fs.existsSync(path.join(run.runDirectory, 'report.md')), true);
+});
+
+test('runner preserves structured adapter diagnostics before sampling or scoring', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  let injected = false;
+
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest: publicManifest(layout),
+    runIdentity: runIdentity(),
+    adapterFactory: fakeAdapterFactory(events, {
+      transcribeFailure({ runtime }) {
+        if (injected || runtime.id !== 'wasper-metal-int8') return undefined;
+        injected = true;
+        return {
+          error: {
+            type: 'runtime-error',
+            message: 'adapter kept the original failure diagnostic',
+            activationId: 'wasper-metal-int8-activation',
+          },
+        };
+      },
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  const record = run.records.find(
+    candidate => candidate.cellId === 'wasper-metal-int8' && candidate.outcome === 'error'
+  );
+  assert.ok(record);
+  assert.equal(record.raw.error.message, 'adapter kept the original failure diagnostic');
+  assert.equal(record.raw.error.code, 'RUNTIME_RESPONSE_ERROR');
+  assert.equal(record.raw.error.type, 'runtime-error');
+});
+
+test('runner excludes a runtime after a structured over-cap Metal allocation failure', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const diagnostic = 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB';
+  let injected = false;
+
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest: publicManifest(layout),
+    runIdentity: runIdentity(),
+    adapterFactory: fakeAdapterFactory(events, {
+      transcribeFailure({ runtime }) {
+        if (injected || runtime.id !== 'wasper-metal-int8') return undefined;
+        injected = true;
+        return {
+          error: {
+            type: 'runtime-error',
+            message: diagnostic,
+            activationId: 'wasper-metal-int8-activation',
+          },
+        };
+      },
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  const wasperRecords = run.records.filter(record => record.cellId === 'wasper-metal-int8');
+  assert.equal(wasperRecords.length, 6);
+  assert.ok(wasperRecords.every(record => record.outcome === 'memory-excluded'));
+  assert.ok(
+    wasperRecords.every(
+      record => record.raw.memoryExclusion.runtimeDiagnostic.message === diagnostic
+    )
+  );
+  assert.equal(
+    events.filter(event => event.type === 'transcribe' && event.runtimeId === 'wasper-metal-int8')
+      .length,
+    1
+  );
 });
 
 test('runner rotates a supplied valid runtime order after its first pass', async t => {

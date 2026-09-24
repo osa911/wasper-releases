@@ -75,8 +75,8 @@ function localRunWithText() {
           durationSeconds: 4,
         },
         footprint: {
-          phys_footprint_peak: 1234,
-          physFootprintPeakBytes: 1234,
+          post_response_phys_footprint: 1234,
+          postResponsePhysicalFootprintBytes: 1234,
           samples: [{ rawOutput: 'private footprint output', pid: 12 }],
         },
         raw: {
@@ -141,6 +141,22 @@ test('public evidence omits transcript and source bytes', () => {
       executable: { version: '1.0.0' },
       packages: [{ name: 'runtime-package', version: '2.0.0' }],
     },
+  });
+});
+
+test('public evidence identifies memory as a post-response sample, not a request peak', () => {
+  const run = localRunWithText();
+  run.records[0].footprint = {
+    post_response_phys_footprint: 1234,
+    post_response_phys_footprint_unit: 'bytes',
+    postResponsePhysicalFootprintBytes: 1234,
+    samples: [{ rawOutput: 'private footprint output', pid: 12 }],
+  };
+
+  const projection = projectPublicEvidence(run);
+
+  assert.deepEqual(projection.records[0].footprint, {
+    post_response_phys_footprint: 1234,
   });
 });
 

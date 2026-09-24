@@ -21,8 +21,9 @@ class PhysicalFootprintCapError extends Error {
   constructor({
     capBytes,
     footprint,
-    metric = 'phys_footprint_peak',
-    observedBytes = footprint?.physFootprintPeakBytes ?? footprint?.phys_footprint_peak,
+    metric = 'post_response_phys_footprint',
+    observedBytes =
+      footprint?.postResponsePhysicalFootprintBytes ?? footprint?.post_response_phys_footprint,
     code = 'PHYSICAL_FOOTPRINT_CAP_EXCEEDED',
     name = 'PhysicalFootprintCapError',
   }) {
@@ -194,6 +195,8 @@ function errorRecord(item, fixture, error) {
         name: error?.name ?? 'Error',
         message: error?.message ?? String(error),
         code: error?.code ?? null,
+        type: error?.runtimeDiagnostic?.type ?? null,
+        activationId: error?.runtimeDiagnostic?.activationId ?? null,
       },
     },
   };
@@ -215,8 +218,13 @@ function memoryExcludedRecord(item, fixture, error) {
         metric: error.metric,
         maxPhysicalFootprintBytes: error.capBytes,
         observedMemoryBytes: error.observedBytes,
-        observedPhysicalFootprintBytes:
-          error.footprint?.physFootprintPeakBytes ?? error.footprint?.phys_footprint_peak ?? null,
+        observedPostResponsePhysicalFootprintBytes:
+          error.footprint?.postResponsePhysicalFootprintBytes ??
+          error.footprint?.post_response_phys_footprint ??
+          null,
+        ...(error.runtimeDiagnostic === undefined
+          ? {}
+          : { runtimeDiagnostic: error.runtimeDiagnostic }),
       },
     },
   };
@@ -248,19 +256,47 @@ function isPhysicalFootprintCapError(error) {
   return error instanceof PhysicalFootprintCapError;
 }
 
-function physicalFootprintBytes(footprint) {
-  const bytes = footprint?.physFootprintPeakBytes ?? footprint?.phys_footprint_peak;
+function postResponsePhysicalFootprintBytes(footprint) {
+  const bytes =
+    footprint?.postResponsePhysicalFootprintBytes ?? footprint?.post_response_phys_footprint;
   if (!Number.isFinite(bytes) || bytes <= 0) {
-    throw new TypeError('physical footprint evidence must include a positive byte value');
+    throw new TypeError('post-response physical footprint evidence must include a positive byte value');
   }
   return bytes;
 }
 
-function assertPhysicalFootprintCap(footprint, capBytes) {
-  if (physicalFootprintBytes(footprint) > capBytes) {
+function assertPostResponsePhysicalFootprintCap(footprint, capBytes) {
+  if (postResponsePhysicalFootprintBytes(footprint) > capBytes) {
     throw new PhysicalFootprintCapError({ capBytes, footprint });
   }
   return footprint;
+}
+
+function structuredAdapterResponseError(response) {
+  if (
+    response === null ||
+    typeof response !== 'object' ||
+    Array.isArray(response) ||
+    !Object.hasOwn(response, 'error')
+  ) {
+    return null;
+  }
+  const source = response.error;
+  const message =
+    typeof source?.message === 'string' && source.message !== ''
+      ? source.message
+      : 'Runtime adapter returned an invalid structured error response';
+  const error = new Error(message);
+  error.name = 'RuntimeAdapterResponseError';
+  error.code = 'RUNTIME_RESPONSE_ERROR';
+  error.runtimeDiagnostic = {
+    type: typeof source?.type === 'string' && source.type !== '' ? source.type : 'runtime-error',
+    message,
+    ...(typeof source?.activationId === 'string' && source.activationId !== ''
+      ? { activationId: source.activationId }
+      : {}),
+  };
+  return error;
 }
 
 function metalAllocationCapError(error, capBytes, footprint) {
@@ -275,7 +311,7 @@ function metalAllocationCapError(error, capBytes, footprint) {
   if (!allocationText.endsWith('MiB')) return null;
   const observedBytes = Math.round(Number(allocationText.slice(0, -3).trim()) * 1024 ** 2);
   if (!Number.isFinite(observedBytes) || observedBytes <= capBytes) return null;
-  return new PhysicalFootprintCapError({
+  const capError = new PhysicalFootprintCapError({
     capBytes,
     footprint,
     metric: 'Metal buffer allocation request',
@@ -283,6 +319,10 @@ function metalAllocationCapError(error, capBytes, footprint) {
     code: 'METAL_ALLOCATION_CAP_EXCEEDED',
     name: 'MetalAllocationCapError',
   });
+  if (error?.runtimeDiagnostic !== undefined) {
+    capError.runtimeDiagnostic = error.runtimeDiagnostic;
+  }
+  return capError;
 }
 
 function priorMemoryExclusionErrors(priorMemoryExclusions, capBytes) {
@@ -316,7 +356,7 @@ function priorMemoryExclusionErrors(priorMemoryExclusions, capBytes) {
       continue;
     }
     try {
-      assertPhysicalFootprintCap(footprint, capBytes);
+      assertPostResponsePhysicalFootprintCap(footprint, capBytes);
     } catch (error) {
       if (isPhysicalFootprintCapError(error)) exclusions.set(cellId, error);
       else throw error;
@@ -349,8 +389,10 @@ async function transcribeThenSamplePhysicalFootprint({ adapter, fixture, capByte
     // timing. The timing response must resolve before this unscored memory
     // observation begins.
     const response = await adapter.transcribe(fixture, requestOptions);
+    const responseError = structuredAdapterResponseError(response);
+    if (responseError) throw responseError;
     lastFootprint = await sampleFootprintAfterTiming(adapter);
-    assertPhysicalFootprintCap(lastFootprint, capBytes);
+    assertPostResponsePhysicalFootprintCap(lastFootprint, capBytes);
     return { response, footprint: lastFootprint };
   } catch (error) {
     const allocationError = metalAllocationCapError(error, capBytes, lastFootprint);
@@ -449,14 +491,14 @@ async function runRuntimeBenchmark({
         activation.start = await adapter.start();
         activation.health = await adapter.health();
         activation.identity = await adapter.identity();
-        activation.afterHealthFootprint = assertPhysicalFootprintCap(
+        activation.afterHealthFootprint = assertPostResponsePhysicalFootprintCap(
           await adapter.sampleFootprint(),
           maxPhysicalFootprintBytes
         );
         activation.warmup = await adapter.warmup(hydratedManifest.runCorpus.warmup, {
           languagePolicy: { mode: 'automatic', languageHint: null },
         });
-        activation.afterWarmupFootprint = assertPhysicalFootprintCap(
+        activation.afterWarmupFootprint = assertPostResponsePhysicalFootprintCap(
           await adapter.sampleFootprint(),
           maxPhysicalFootprintBytes
         );
@@ -531,8 +573,9 @@ async function runRuntimeBenchmark({
                 maxPhysicalFootprintBytes: error.capBytes,
                 metric: error.metric,
                 observedMemoryBytes: error.observedBytes,
-                observedPhysicalFootprintBytes:
-                  error.footprint?.physFootprintPeakBytes ?? error.footprint?.phys_footprint_peak,
+                observedPostResponsePhysicalFootprintBytes:
+                  error.footprint?.postResponsePhysicalFootprintBytes ??
+                  error.footprint?.post_response_phys_footprint,
               },
             }
           : {

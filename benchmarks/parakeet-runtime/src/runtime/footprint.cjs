@@ -2,18 +2,8 @@
 
 const childProcess = require('node:child_process');
 
-const FOOTPRINT_COMMAND = '/usr/bin/footprint';
 const TOP_COMMAND = '/usr/bin/top';
 const TOP_TIMEOUT_MS = 5_000;
-const UNIT_BYTES = Object.freeze({
-  B: 1,
-  KB: 1_000,
-  KiB: 1024,
-  MB: 1_000_000,
-  MiB: 1024 ** 2,
-  GB: 1_000_000_000,
-  GiB: 1024 ** 3,
-});
 const TOP_UNIT_BYTES = Object.freeze({
   B: 1,
   K: 1024,
@@ -40,27 +30,6 @@ function isUnsignedDecimal(value) {
   return parts.length <= 2 && parts.every(part => part !== '' && !/[^0-9]/u.test(part));
 }
 
-function parsePhysicalFootprint(rawOutput) {
-  if (typeof rawOutput !== 'string') throw new TypeError('footprint raw output must be a string');
-  const matches = rawOutput
-    .split(/\r?\n/u)
-    .map(line => line.trim().split(':'))
-    .filter(parts => parts.length === 2 && parts[0].trim() === 'phys_footprint_peak')
-    .map(parts => parts[1].trim().split(/\s+/u))
-    .filter(parts => parts.length === 2 && isUnsignedDecimal(parts[0]));
-  if (matches.length !== 1 || !Object.hasOwn(UNIT_BYTES, matches[0][1])) {
-    throw new Error(
-      'footprint output must contain exactly one phys_footprint_peak value with a unit'
-    );
-  }
-  const value = Number(matches[0][0]);
-  const bytes = value * UNIT_BYTES[matches[0][1]];
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    throw new Error('phys_footprint_peak must be a positive finite value');
-  }
-  return bytes;
-}
-
 function parseTopMemoryValue(value) {
   if (typeof value !== 'string' || value.length < 2) return null;
   const unit = value.at(-1);
@@ -69,7 +38,7 @@ function parseTopMemoryValue(value) {
   return { numeric, unit };
 }
 
-function parseTopPhysicalFootprint(rawOutput, pid) {
+function parseTopPostResponsePhysicalFootprint(rawOutput, pid) {
   if (typeof rawOutput !== 'string') throw new TypeError('top raw output must be a string');
   requirePositivePid(pid);
   const matches = rawOutput
@@ -102,7 +71,7 @@ function topFailure(result) {
   return null;
 }
 
-function samplePhysicalFootprint(
+function samplePostResponsePhysicalFootprint(
   pid,
   { spawnSyncImpl = childProcess.spawnSync, clock = () => new Date() } = {}
 ) {
@@ -116,21 +85,22 @@ function samplePhysicalFootprint(
   });
   const failure = topFailure(result);
   if (failure) throw new Error(failure, { cause: result?.error });
-  if (typeof result?.stdout !== 'string')
+  if (typeof result?.stdout !== 'string') {
     throw new TypeError('top command stdout must be a string');
+  }
   const timestamp = clock();
   if (!(timestamp instanceof Date) || Number.isNaN(timestamp.valueOf())) {
     throw new TypeError('footprint clock must return a valid Date');
   }
-  const physicalFootprintBytes = parseTopPhysicalFootprint(result.stdout, pid);
+  const physicalFootprintBytes = parseTopPostResponsePhysicalFootprint(result.stdout, pid);
   return deepFreeze({
     pid,
     timestamp: timestamp.toISOString(),
     command: `${TOP_COMMAND} ${arguments_.join(' ')}`,
     rawOutput: result.stdout,
-    phys_footprint_peak: physicalFootprintBytes,
-    phys_footprint_peak_unit: 'bytes',
-    physFootprintPeakBytes: physicalFootprintBytes,
+    post_response_phys_footprint: physicalFootprintBytes,
+    post_response_phys_footprint_unit: 'bytes',
+    postResponsePhysicalFootprintBytes: physicalFootprintBytes,
   });
 }
 
@@ -144,85 +114,92 @@ function sampleOwnedProcessTree(processes, options = {}) {
       throw new TypeError(`owned process tree entry ${index} must be an object`);
     }
     requirePositivePid(process.pid, `owned process tree entry ${index}.pid`);
-    if (pids.has(process.pid))
+    if (pids.has(process.pid)) {
       throw new TypeError(`owned process tree contains duplicate PID ${process.pid}`);
+    }
     pids.add(process.pid);
-    return samplePhysicalFootprint(process.pid, options);
+    return samplePostResponsePhysicalFootprint(process.pid, options);
   });
-  return validatePhysicalFootprintEvidence({
+  return validatePostResponsePhysicalFootprintEvidence({
     samples,
-    phys_footprint_peak: samples.reduce((total, sample) => total + sample.phys_footprint_peak, 0),
-    phys_footprint_peak_unit: 'bytes',
-    physFootprintPeakBytes: samples.reduce(
-      (total, sample) => total + sample.physFootprintPeakBytes,
+    post_response_phys_footprint: samples.reduce(
+      (total, sample) => total + sample.post_response_phys_footprint,
+      0
+    ),
+    post_response_phys_footprint_unit: 'bytes',
+    postResponsePhysicalFootprintBytes: samples.reduce(
+      (total, sample) => total + sample.postResponsePhysicalFootprintBytes,
       0
     ),
   });
 }
 
-function parseSamplePhysicalFootprint(sample) {
+function parsePostResponsePhysicalFootprintSample(sample) {
   const topCommand = `${TOP_COMMAND} -l 1 -pid ${sample.pid} -stats pid,mem`;
-  if (sample.command === topCommand) return parseTopPhysicalFootprint(sample.rawOutput, sample.pid);
-  const legacyFootprintCommand = `${FOOTPRINT_COMMAND} -p ${sample.pid}`;
-  if (sample.command === legacyFootprintCommand) return parsePhysicalFootprint(sample.rawOutput);
-  throw new TypeError(
-    `physical footprint sample command must equal ${topCommand} or ${legacyFootprintCommand}`
-  );
+  if (sample.command === topCommand) {
+    return parseTopPostResponsePhysicalFootprint(sample.rawOutput, sample.pid);
+  }
+  throw new TypeError(`post-response physical footprint sample command must equal ${topCommand}`);
 }
 
-function validatePhysicalFootprintEvidence(evidence) {
+function validatePostResponsePhysicalFootprintEvidence(evidence) {
   if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)) {
-    throw new TypeError('physical footprint evidence must be an object');
+    throw new TypeError('post-response physical footprint evidence must be an object');
   }
   if (Object.hasOwn(evidence, 'totalRssBytes') || Object.hasOwn(evidence, 'rssBytes')) {
     throw new TypeError('RSS is not physical footprint evidence');
   }
   if (!Array.isArray(evidence.samples) || evidence.samples.length === 0) {
-    throw new TypeError('physical footprint evidence must include one or more samples');
+    throw new TypeError('post-response physical footprint evidence must include one or more samples');
   }
-  if (!Number.isFinite(evidence.physFootprintPeakBytes) || evidence.physFootprintPeakBytes <= 0) {
+  if (
+    !Number.isFinite(evidence.postResponsePhysicalFootprintBytes) ||
+    evidence.postResponsePhysicalFootprintBytes <= 0
+  ) {
     throw new TypeError(
-      'physical footprint evidence must include a positive numeric physFootprintPeakBytes'
+      'post-response physical footprint evidence must include a positive numeric postResponsePhysicalFootprintBytes'
     );
   }
   if (
-    !Number.isFinite(evidence.phys_footprint_peak) ||
-    evidence.phys_footprint_peak <= 0 ||
-    evidence.phys_footprint_peak_unit !== 'bytes'
+    !Number.isFinite(evidence.post_response_phys_footprint) ||
+    evidence.post_response_phys_footprint <= 0 ||
+    evidence.post_response_phys_footprint_unit !== 'bytes'
   ) {
     throw new TypeError(
-      'physical footprint evidence must include numeric phys_footprint_peak in bytes'
+      'post-response physical footprint evidence must include numeric post_response_phys_footprint in bytes'
     );
   }
   let total = 0;
   const samples = evidence.samples.map((sample, index) => {
     if (sample === null || typeof sample !== 'object' || Array.isArray(sample)) {
-      throw new TypeError(`physical footprint sample ${index} must be an object`);
+      throw new TypeError(`post-response physical footprint sample ${index} must be an object`);
     }
-    requirePositivePid(sample.pid, `physical footprint sample ${index}.pid`);
+    requirePositivePid(sample.pid, `post-response physical footprint sample ${index}.pid`);
     if (typeof sample.timestamp !== 'string' || Number.isNaN(Date.parse(sample.timestamp))) {
-      throw new TypeError(`physical footprint sample ${index}.timestamp must be an ISO timestamp`);
+      throw new TypeError(
+        `post-response physical footprint sample ${index}.timestamp must be an ISO timestamp`
+      );
     }
     if (typeof sample.rawOutput !== 'string' || sample.rawOutput === '') {
       throw new TypeError(
-        `physical footprint sample ${index}.rawOutput must retain command output`
+        `post-response physical footprint sample ${index}.rawOutput must retain command output`
       );
     }
     let parsed;
     try {
-      parsed = parseSamplePhysicalFootprint(sample);
+      parsed = parsePostResponsePhysicalFootprintSample(sample);
     } catch (error) {
-      throw new TypeError(`physical footprint sample ${index}.command is invalid`, {
+      throw new TypeError(`post-response physical footprint sample ${index}.command is invalid`, {
         cause: error,
       });
     }
     if (
-      sample.physFootprintPeakBytes !== parsed ||
-      sample.phys_footprint_peak !== parsed ||
-      sample.phys_footprint_peak_unit !== 'bytes'
+      sample.postResponsePhysicalFootprintBytes !== parsed ||
+      sample.post_response_phys_footprint !== parsed ||
+      sample.post_response_phys_footprint_unit !== 'bytes'
     ) {
       throw new TypeError(
-        `physical footprint sample ${index} does not match its raw command output`
+        `post-response physical footprint sample ${index} does not match its raw command output`
       );
     }
     total += parsed;
@@ -231,36 +208,40 @@ function validatePhysicalFootprintEvidence(evidence) {
       timestamp: sample.timestamp,
       command: sample.command,
       rawOutput: sample.rawOutput,
-      phys_footprint_peak: parsed,
-      phys_footprint_peak_unit: 'bytes',
-      physFootprintPeakBytes: parsed,
+      post_response_phys_footprint: parsed,
+      post_response_phys_footprint_unit: 'bytes',
+      postResponsePhysicalFootprintBytes: parsed,
     };
   });
-  if (evidence.physFootprintPeakBytes !== total || evidence.phys_footprint_peak !== total) {
-    throw new TypeError('physical footprint evidence total does not match owned process samples');
+  if (
+    evidence.postResponsePhysicalFootprintBytes !== total ||
+    evidence.post_response_phys_footprint !== total
+  ) {
+    throw new TypeError(
+      'post-response physical footprint evidence total does not match owned process samples'
+    );
   }
   return deepFreeze({
     samples,
-    phys_footprint_peak: total,
-    phys_footprint_peak_unit: 'bytes',
-    physFootprintPeakBytes: total,
+    post_response_phys_footprint: total,
+    post_response_phys_footprint_unit: 'bytes',
+    postResponsePhysicalFootprintBytes: total,
   });
 }
 
 function projectPublicFootprint(evidence) {
-  const bytes = evidence?.physFootprintPeakBytes ?? evidence?.phys_footprint_peak;
+  const bytes =
+    evidence?.postResponsePhysicalFootprintBytes ?? evidence?.post_response_phys_footprint;
   if (!Number.isFinite(bytes) || bytes <= 0) return null;
-  return Object.freeze({ phys_footprint_peak: bytes });
+  return Object.freeze({ post_response_phys_footprint: bytes });
 }
 
 module.exports = {
-  FOOTPRINT_COMMAND,
   TOP_COMMAND,
   TOP_TIMEOUT_MS,
-  parsePhysicalFootprint,
-  parseTopPhysicalFootprint,
+  parseTopPostResponsePhysicalFootprint,
   projectPublicFootprint,
   sampleOwnedProcessTree,
-  samplePhysicalFootprint,
-  validatePhysicalFootprintEvidence,
+  samplePostResponsePhysicalFootprint,
+  validatePostResponsePhysicalFootprintEvidence,
 };

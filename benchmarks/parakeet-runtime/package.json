@@ -4,6 +4,7 @@
     "test": "node --test test/*.test.cjs",
     "doctor": "node bin/benchmark.cjs doctor",
     "benchmark": "node bin/benchmark.cjs benchmark",
+    "smoke": "node bin/benchmark.cjs smoke",
     "clean": "node bin/benchmark.cjs clean",
     "audit:public": "node bin/benchmark.cjs audit-public"
   },

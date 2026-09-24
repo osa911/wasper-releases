@@ -99,11 +99,11 @@ function aggregateRuntimeEvidence({ records, schedule, requestBalancedFixtureIds
       return cellRecords.filter(record => keys.has(scheduleKey(record)));
     };
     const footprints = cellRecords
-      .map(record => record.footprint?.phys_footprint_peak)
+      .map(record => record.footprint?.post_response_phys_footprint)
       .filter(Number.isFinite);
     cells[descriptor.id] = {
       runtime: descriptor,
-      phys_footprint_peak: footprints.length === 0 ? null : Math.max(...footprints),
+      post_response_phys_footprint: footprints.length === 0 ? null : Math.max(...footprints),
       memoryExcluded: cellRecords.some(record => record.outcome === 'memory-excluded'),
       memoryExclusion:
         cellRecords.find(record => record.outcome === 'memory-excluded')?.raw?.memoryExclusion ??

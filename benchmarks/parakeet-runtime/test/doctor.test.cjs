@@ -114,6 +114,26 @@ test('reports a supported M-series Mac without creating the cache or output dire
   assert.equal(fs.existsSync(layout.outputRoot), false);
 });
 
+test('blocks a run until both corpus audio tools are available', t => {
+  const layout = temporaryLayout(t);
+
+  const result = doctor(
+    layout,
+    runtimeLock(),
+    readyDependencies({
+      findTool(name) {
+        return name === 'ffprobe' ? null : `/usr/bin/${name}`;
+      },
+    })
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(check(result, 'ffmpeg').state, 'ready');
+  assert.equal(check(result, 'ffprobe').state, 'blocked');
+  assert.match(check(result, 'ffprobe').remediation, /brew install ffmpeg/u);
+  assert.equal(fs.existsSync(layout.cacheRoot), false);
+});
+
 test('rejects an Intel Mac as a full-run prerequisite failure', t => {
   const layout = temporaryLayout(t);
 

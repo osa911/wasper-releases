@@ -75,3 +75,9 @@ test('the public package contains the complete extracted module set', () => {
     assert.equal(fs.existsSync(path.join(packageRoot, relativePath)), true, relativePath);
   }
 });
+
+test('documents the runnable smoke command it advertises', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+
+  assert.equal(packageJson.scripts.smoke, 'node bin/benchmark.cjs smoke');
+});

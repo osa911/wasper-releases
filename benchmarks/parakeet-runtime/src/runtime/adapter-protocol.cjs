@@ -1,6 +1,9 @@
 'use strict';
 
-const { sampleOwnedProcessTree, validatePhysicalFootprintEvidence } = require('./footprint.cjs');
+const {
+  sampleOwnedProcessTree,
+  validatePostResponsePhysicalFootprintEvidence,
+} = require('./footprint.cjs');
 const {
   validateAutomaticLanguageCommand,
   validateAutomaticLanguageResponseMetadata,
@@ -303,7 +306,7 @@ function createResidentAdapter(
     requireState('healthy', 'sampleFootprint');
     const tree = await operations.ownedProcessTree({ activationId: activationId() });
     requirePlainObject(tree, 'owned process tree');
-    return validatePhysicalFootprintEvidence(await sampleFootprintImpl(tree.processes));
+    return validatePostResponsePhysicalFootprintEvidence(await sampleFootprintImpl(tree.processes));
   }
 
   async function identity() {

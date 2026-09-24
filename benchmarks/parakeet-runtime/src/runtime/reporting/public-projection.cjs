@@ -95,7 +95,7 @@ function projectedLimitation(record) {
     'metric',
     'maxPhysicalFootprintBytes',
     'observedMemoryBytes',
-    'observedPhysicalFootprintBytes',
+    'observedPostResponsePhysicalFootprintBytes',
   ]) {
     if (typeof source[field] === 'string' || finite(source[field]) !== undefined) {
       limitation[field] = source[field];
@@ -169,9 +169,9 @@ function projectedAggregate(aggregate) {
           .filter(field => runtime[field] !== undefined)
           .map(field => [field, runtime[field]])
       ),
-      ...(finite(cell.phys_footprint_peak) === undefined
+      ...(finite(cell.post_response_phys_footprint) === undefined
         ? {}
-        : { phys_footprint_peak: cell.phys_footprint_peak }),
+        : { post_response_phys_footprint: cell.post_response_phys_footprint }),
       ...(typeof cell.memoryExcluded === 'boolean' ? { memoryExcluded: cell.memoryExcluded } : {}),
       workloads: Object.fromEntries(
         Object.entries(cell.workloads ?? {}).map(([name, workload]) => [

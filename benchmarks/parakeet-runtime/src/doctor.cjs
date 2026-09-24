@@ -11,6 +11,8 @@ const WASPER_RELEASES_URL = 'https://github.com/osa911/wasper-releases/releases'
 const REQUIRED_TOOLS = Object.freeze([
   { id: 'git', command: 'git', remediation: 'xcode-select --install' },
   { id: 'cmake', command: 'cmake', remediation: 'brew install cmake' },
+  { id: 'ffmpeg', command: 'ffmpeg', remediation: 'brew install ffmpeg' },
+  { id: 'ffprobe', command: 'ffprobe', remediation: 'brew install ffmpeg' },
   { id: 'xcrun', command: 'xcrun', remediation: 'xcode-select --install' },
 ]);
 const BOOTSTRAP_PYTHON_PROBE = Object.freeze([

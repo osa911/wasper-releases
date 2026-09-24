@@ -28,7 +28,8 @@ seven-runtime result and must not be used to recreate or rank against it.
 ## Requirements
 
 Use macOS on an Apple Silicon Mac. Install Node.js 22 or later, Xcode Command
-Line Tools, Git, Python 3, and CMake. Install Wasper 1.8.0 or a later release.
+Line Tools, Git, Python 3, CMake, and FFmpeg (which provides both `ffmpeg` and
+`ffprobe`). Install Wasper 1.8.0 or a later release.
 The 1.8.0 release is the exact published baseline; a later release is accepted
 but reported as a later-release comparison.
 
@@ -39,6 +40,7 @@ xcode-select --install
 brew install node@22
 brew install python@3.12
 brew install cmake
+brew install ffmpeg
 npm ci
 python3 -m venv .venv
 . .venv/bin/activate
@@ -56,9 +58,10 @@ and kernel release, Node version, available disk, cache and output locations,
 Wasper classification, and a state for every runtime. It exits nonzero when a
 prerequisite invalidates a full run; that is expected at this commit because of
 the locked runtime and long-source blockers. Doctor checks the exact `python3`
-used by bootstrap, every package pin required by a ready runtime, and `swift`
-because the checked-in lock includes a Swift runtime. It prints a command for
-each missing prerequisite and never runs that command itself.
+used by bootstrap, both FFmpeg tools needed to recover audio, every package pin
+required by a ready runtime, and `swift` because the checked-in lock includes a
+Swift runtime. It prints a command for each missing prerequisite and never runs
+that command itself.
 
 The doctor requires at least 24 GiB of free disk. This is a preflight floor,
 not an exact cache size. No measured full-run elapsed time or cache size is
@@ -67,7 +70,7 @@ available while the full cohort is blocked.
 If doctor reports a missing Python package, activate `.venv` and use the
 command it prints. The manual remediations documented here are
 `xcode-select --install`, `brew install node@22`, `brew install python@3.12`,
-`brew install cmake`, `python -m pip install <package>==<version>`, and
+`brew install cmake`, `brew install ffmpeg`, `python -m pip install <package>==<version>`, and
 `npm run clean`.
 If doctor reports that Wasper.app is missing, complete these steps:
 
@@ -151,6 +154,15 @@ faster than real time. WER is word-edit errors divided by reference words; CER
 is character-edit errors divided by reference characters. Lower WER and CER are
 better. Warm-up requests establish runtime residency and are excluded from
 timing.
+
+Memory evidence for a timed request is one macOS physical-footprint sample for
+the owned runtime process tree, collected only after that response resolves.
+The runner also samples after activation health and warm-up so it can stop an
+already over-cap runtime before scoring requests. The request result is reported
+as `post_response_phys_footprint`; it is not a peak-memory measurement during a
+request. The 8 GiB exclusion rule applies to those samples and to a runtime
+that explicitly reports a single allocation request above the cap. A runtime
+excluded for either condition stops for the rest of the run.
 
 Each long recording is sent as one complete recording. The benchmark never
 chunks or merges long audio. A runtime may have its own documented long-audio

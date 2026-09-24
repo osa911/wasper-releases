@@ -139,7 +139,7 @@ function createPublicRunIdentity(manifest, runtimeLock, { mode = 'full', runtime
       memory: {
         action: 'exclude-and-stop',
         maximumBytes: MAX_PHYSICAL_FOOTPRINT_BYTES,
-        metric: 'phys_footprint_peak',
+        metric: 'post_response_phys_footprint',
         samplePhase: 'after-timed-response',
       },
     },
