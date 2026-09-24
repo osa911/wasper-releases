@@ -37,11 +37,11 @@ async function runtimeFixture(t) {
     'fixture',
   ]);
   const bytes = Buffer.from('synthetic model fixture\n');
-  const state = { body: bytes, requests: 0, onRequest: null };
+  const state = { body: bytes, requests: 0, onRequest: null, responses: new Map() };
   const server = http.createServer((request, response) => {
     state.requests++;
     state.onRequest?.();
-    response.end(state.body);
+    response.end(state.responses.get(request.url) ?? state.body);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(
@@ -86,7 +86,10 @@ async function runtimeFixture(t) {
     dependencies: {
       authority,
       sourceTransport: () => source,
-      fetchImpl: () => fetch(`http://127.0.0.1:${server.address().port}/model`),
+      fetchImpl: url =>
+        fetch(
+          `http://127.0.0.1:${server.address().port}/${url.endsWith('.zip') ? 'dependency' : 'model'}`
+        ),
     },
   };
 }

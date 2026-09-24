@@ -22,9 +22,12 @@ const lock = loadRuntimeLock();
 await bootstrapRuntime('handy-gguf-q8', { layout, lock, python: 'python3' });
 ```
 
-The optional `python` argument selects an existing executable. Bootstrap
-checks each required Python package version. It does not install Python
-packages, developer tools, Homebrew, or any system package. MLX requires
+The optional `python` argument selects an existing Python 3 executable.
+Every bootstrap download requires its descriptor-relative file operations.
+The stdlib-only download helper inherits a verified owned-directory descriptor;
+parent-path replacement cannot redirect its file creation or promotion.
+Bootstrap also checks each required Python package version. It does not install
+Python packages, developer tools, Homebrew, or any system package. MLX requires
 `parakeet-mlx==0.5.2` and `mlx==0.32.2`. ONNX requires `onnx-asr==0.12.0`
 and `onnxruntime==1.30.0`. Handy uses the selected Python and the binding in its
 pinned source checkout. Native builds require CMake and the Xcode Command
@@ -36,6 +39,13 @@ Tool caches live under its `.tool-cache` child. Model files live under
 refuses an unmarked nonempty root. It does not download or install Wasper.app.
 The released app must already be installed for activation.
 
+Bootstrap fetches every locked Swift binary dependency URL into
+`artifacts/<runtimeId>/.binary-dependencies/<sha256>.zip` and checks its SHA-256
+before any build. These archives are also rehashed on reuse and activation.
+Archive transfers without a locked size have a 1 GiB limit. Swift Package
+Manager still enforces the checksum in the pinned source manifest for the
+archive it consumes. Bootstrap does not unpack archives itself.
+
 `verifyRuntimeInstallation(runtimeId, { layout, lock, python })` verifies an
 existing installation without downloading or building. Adapter creation and
 activation call this gate before version probes or runtime requests. Checks
@@ -43,6 +53,11 @@ include model hashes, unexpected model files, clean source revisions, bridge
 hashes, and the build inventory. Locally built executables and companion
 libraries are hashed into a local receipt and checked on reuse. These hashes
 describe the local build, not a historical binary.
+
+The public adapter rejects `audioChunks`, including an empty chunk list, for
+both warmup and transcription. Each accepted request sends one complete
+`audioPath` to the runtime. Runtime-internal window settings remain in the
+lock and do not enable benchmark-owned splitting or transcript merging.
 
 Changed or partial caches fail closed. Bootstrap does not overwrite a
 different checkout or accept a newly computed model hash. A failed attempt

@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile, execFileSync } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { promisify, isDeepStrictEqual } = require('node:util');
 const { loadRuntimeLock, runtimeFromLock } = require('./locks.cjs');
 const { ownedRuntimeStorage } = require('./owned-runtime-storage.cjs');
@@ -13,6 +16,16 @@ const execute = promisify(execFile);
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const RETRY =
   'Install the documented prerequisite, then run npm run benchmark -- full --accept-source-terms again.';
+
+function runtimeArtifacts(runtime) {
+  return [
+    ...runtime.artifacts,
+    ...(runtime.build.binaryDependencies ?? []).map(dependency => ({
+      ...dependency,
+      path: `.binary-dependencies/${dependency.sha256}.zip`,
+    })),
+  ];
+}
 
 function processEnvironment(storage) {
   const cache = storage.directory(path.join(storage.layout.holdersRoot, '.tool-cache'));
@@ -71,8 +84,11 @@ async function prerequisites(runtime, python, storage, env, tools) {
     checks.push([tools.cmake ?? 'cmake', ['--version'], 'CMake and Xcode Command Line Tools']);
   if (runtime.build.kind === 'swift')
     checks.push([tools.swift ?? 'swift', ['--version'], 'Swift and Xcode Command Line Tools']);
-  if (runtime.command === '{python}')
-    checks.push([python, ['--version'], 'the selected Python executable']);
+  checks.push([
+    python,
+    ['-I', '-B', '-c', 'import os; assert {os.open, os.link, os.unlink} <= os.supports_dir_fd'],
+    'the selected Python 3 executable with descriptor-relative file operations',
+  ]);
   for (const [command, args, label] of checks) {
     try {
       await run(storage, command, args, env);
@@ -103,49 +119,65 @@ async function prerequisites(runtime, python, storage, env, tools) {
   }
 }
 
-async function download(artifact, root, storage, fetchImpl) {
+async function download(artifact, root, storage, fetchImpl, python, env) {
   const target = path.join(root, artifact.path);
   storage.directory(path.dirname(target));
   if (fs.existsSync(target)) {
     const actual = storage.hashFile(target);
-    if (actual.sha256 !== artifact.sha256 || actual.sizeBytes !== artifact.sizeBytes)
+    if (
+      actual.sha256 !== artifact.sha256 ||
+      (artifact.sizeBytes !== undefined && actual.sizeBytes !== artifact.sizeBytes)
+    )
       throw new Error(`SHA-256 or size mismatch: ${artifact.path}`);
     return target;
   }
-  const part = `${target}.${crypto.randomUUID()}.part`;
   const response = await fetchImpl(artifact.url, {
     signal: AbortSignal.timeout(30 * 60 * 1000),
   });
   if (!response.ok || !response.body)
     throw new Error(`HTTP ${response.status}: ${artifact.url}`);
-  storage.check();
-  const fd = fs.openSync(
-    part,
-    fs.constants.O_WRONLY |
-      fs.constants.O_CREAT |
-      fs.constants.O_EXCL |
-      fs.constants.O_NOFOLLOW,
-    0o600
-  );
-  const hash = crypto.createHash('sha256');
-  let size = 0;
+  // Node has no openat/linkat API. Pass a verified directory descriptor to a
+  // stdlib-only Python writer; it never resolves a destination parent path.
+  const fd = storage.openDirectory(path.dirname(target));
   try {
-    for await (const chunk of response.body) {
-      size += chunk.length;
-      if (size > artifact.sizeBytes) throw new Error(`size mismatch: ${artifact.path}`);
-      hash.update(chunk);
-      fs.writeFileSync(fd, chunk);
-    }
+    const writer = childProcess.spawn(
+      python,
+      [
+        '-I',
+        '-B',
+        path.join(__dirname, 'owned-download.py'),
+        path.basename(target),
+        artifact.sha256,
+        artifact.sizeBytes === undefined ? '-' : String(artifact.sizeBytes),
+      ],
+      {
+        env,
+        cwd: storage.layout.cacheRoot,
+        stdio: ['pipe', 'ignore', 'pipe', fd],
+        timeout: 30 * 60 * 1000,
+      }
+    );
+    let detail = '';
+    writer.stderr.on('data', chunk => {
+      detail = (detail + chunk).slice(-65536);
+    });
+    const finished = new Promise((resolve, reject) => {
+      writer.once('error', reject);
+      writer.once('close', code =>
+        code === 0 ? resolve() : reject(new Error(`download failed: ${detail.trim()}`))
+      );
+    });
+    const transfer = pipeline(Readable.from(response.body), writer.stdin).catch(error => {
+      writer.kill();
+      throw error;
+    });
+    const results = await Promise.allSettled([finished, transfer]);
+    for (const result of results) if (result.status === 'rejected') throw result.reason;
   } finally {
     fs.closeSync(fd);
   }
   storage.check();
-  if (size !== artifact.sizeBytes || hash.digest('hex') !== artifact.sha256)
-    throw new Error(`SHA-256 mismatch: ${artifact.path}`);
-  storage.regular(part);
-  // link is exclusive: another acquisition cannot have its file overwritten.
-  fs.linkSync(part, target);
-  fs.unlinkSync(part);
+  storage.regular(target);
   return target;
 }
 
@@ -386,9 +418,16 @@ async function bootstrapRuntime(
     storage.directory(artifactRoot);
     storage.directory(holderRoot);
     const artifacts = [];
-    for (const artifact of runtime.artifacts)
+    for (const artifact of runtimeArtifacts(runtime))
       artifacts.push(
-        await download(artifact, artifactRoot, storage, dependencies.fetchImpl ?? fetch)
+        await download(
+          artifact,
+          artifactRoot,
+          storage,
+          dependencies.fetchImpl ?? fetch,
+          python,
+          env
+        )
       );
     if (runtime.source)
       await clone(
@@ -482,7 +521,7 @@ function verifyRuntimeInstallation(
   const holderRoot = path.join(layout.holdersRoot, runtimeId);
   storage.directory(artifactRoot, false);
   const allowed = new Set([
-    ...runtime.artifacts.map(artifact => artifact.path),
+    ...runtimeArtifacts(runtime).map(artifact => artifact.path),
     '.bootstrap.json',
   ]);
   const walk = directory => {
@@ -499,9 +538,12 @@ function verifyRuntimeInstallation(
     }
   };
   walk(artifactRoot);
-  for (const artifact of runtime.artifacts) {
+  for (const artifact of runtimeArtifacts(runtime)) {
     const actual = storage.hashFile(path.join(artifactRoot, artifact.path));
-    if (actual.sha256 !== artifact.sha256 || actual.sizeBytes !== artifact.sizeBytes)
+    if (
+      actual.sha256 !== artifact.sha256 ||
+      (artifact.sizeBytes !== undefined && actual.sizeBytes !== artifact.sizeBytes)
+    )
       throw new Error(`artifact SHA-256 mismatch: ${artifact.path}`);
   }
   const receiptPath = path.join(artifactRoot, '.bootstrap.json');

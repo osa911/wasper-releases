@@ -86,6 +86,52 @@ test('rejects a Wasper descriptor with a language hint', () => {
   assert.throws(() => validateRuntimeLock(lock), /automatic language/);
 });
 
+test('rejects malformed URLs, short revisions and invalid hashes even when authority matches', () => {
+  const cases = [
+    [
+      lock => {
+        lock.runtimes[0].artifacts[0].url = 'not-a-url';
+      },
+      /Invalid URL/,
+    ],
+    [
+      lock => {
+        lock.runtimes[0].artifacts[0].url = 'http://github.com/fixture/model';
+      },
+      /public HTTPS/,
+    ],
+    [
+      lock => {
+        lock.runtimes[0].model.revision = 'abc1234';
+      },
+      /model lock revision/,
+    ],
+    [
+      lock => {
+        lock.runtimes[3].source.revision = 'abc1234';
+      },
+      /source lock revision/,
+    ],
+    [
+      lock => {
+        lock.runtimes[0].artifacts[0].sha256 = 'invalid';
+      },
+      /runtime lock artifact/,
+    ],
+    [
+      lock => {
+        lock.runtimes[6].build.binaryDependencies[0].sha256 = 'invalid';
+      },
+      /binary dependency SHA-256/,
+    ],
+  ];
+  for (const [mutate, expected] of cases) {
+    const lock = structuredClone(loadRuntimeLock());
+    mutate(lock);
+    assert.throws(() => validateRuntimeLock(lock, lock), expected);
+  }
+});
+
 test('adapters derive public artifact and holder paths and selected Python from the lock', () => {
   const layout = resolveLayout();
   const lock = loadRuntimeLock();

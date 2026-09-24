@@ -10,7 +10,6 @@ const { resolveMlxDefinition } = require('./mlx.cjs');
 const { resolveNvidiaGgufDefinition } = require('./nvidia-gguf.cjs');
 const { createProcessClient } = require('./process-client.cjs');
 const { resolveWasperMetalDefinition } = require('./wasper-metal.cjs');
-const { mergeOverlappingTranscripts } = require('../long-audio-chunking.cjs');
 const { resolveLayout } = require('../../config.cjs');
 const { loadRuntimeLock } = require('../locks.cjs');
 const { verifyRuntimeInstallation } = require('../bootstrap.cjs');
@@ -59,6 +58,22 @@ function createRuntimeAdapter(runtimeId, options = {}) {
   const processClientFactory = options.createProcessClientImpl ?? createProcessClient;
   let client = null;
 
+  function completeRecording(fixture) {
+    if (
+      definition.longAudio.input !== 'complete-recording' ||
+      definition.longAudio.benchmarkChunking !== false ||
+      fixture.audioChunks !== undefined
+    ) {
+      throw new Error(
+        'complete-recording input is required; benchmark-owned chunks are forbidden'
+      );
+    }
+    if (typeof fixture.audioPath !== 'string' || !fixture.audioPath.trim()) {
+      throw new Error('complete-recording input requires an audioPath');
+    }
+    return { audioPath: fixture.audioPath };
+  }
+
   const operations = {
     launchCommand,
     async start() {
@@ -70,23 +85,10 @@ function createRuntimeAdapter(runtimeId, options = {}) {
       return client.request('health');
     },
     warmup({ fixture }) {
-      return client.request('warmup', { audioPath: fixture.audioPath });
+      return client.request('warmup', completeRecording(fixture));
     },
     async transcribe({ fixture }) {
-      const audioPaths = fixture.audioChunks?.map(chunk => chunk.audioPath) ?? [
-        fixture.audioPath,
-      ];
-      const responses = [];
-      for (const audioPath of audioPaths) {
-        responses.push(await client.request('transcribe', { audioPath }));
-      }
-      if (responses.length === 1) return responses[0];
-      return {
-        ...responses.at(-1),
-        rawTranscript: mergeOverlappingTranscripts(
-          responses.map(response => response.rawTranscript)
-        ),
-      };
+      return client.request('transcribe', completeRecording(fixture));
     },
     ownedProcessTree() {
       return client.ownedProcessTree();

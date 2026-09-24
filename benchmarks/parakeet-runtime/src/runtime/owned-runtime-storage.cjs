@@ -129,8 +129,26 @@ function ownedRuntimeStorage(supplied, { create = true } = {}) {
     }
     check();
   }
+  function openDirectory(target) {
+    directory(target, false);
+    const fd = fs.openSync(
+      target,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW
+    );
+    try {
+      const info = fs.fstatSync(fd);
+      if (!info.isDirectory() || identity(info) !== directories.get(target)) {
+        throw new Error('runtime download directory changed while opening');
+      }
+      check();
+      return fd;
+    } catch (error) {
+      fs.closeSync(fd);
+      throw error;
+    }
+  }
   check();
-  return { layout, check, directory, regular, hashFile, writeExclusive };
+  return { layout, check, directory, regular, hashFile, writeExclusive, openDirectory };
 }
 
 module.exports = { ownedRuntimeStorage };

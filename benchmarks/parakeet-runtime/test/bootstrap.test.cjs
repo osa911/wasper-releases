@@ -118,6 +118,46 @@ test('detects artifact directory replacement during HTTP without writing outside
   assert.deepEqual(fs.readdirSync(outside), []);
 });
 
+test('a post-verification parent replacement cannot create or write an external download file', async t => {
+  const fixture = await runtimeFixture(t);
+  const parent = path.join(fixture.layout.artifactsRoot, 'handy-gguf-q8');
+  const outside = path.join(fixture.root, 'external-target');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'sentinel'), 'unchanged');
+  let swapped = false;
+  const replace = () => {
+    if (swapped) return;
+    swapped = true;
+    fs.renameSync(parent, `${parent}-displaced`);
+    fs.symlinkSync(outside, parent);
+  };
+  // Interleave at the OS write boundary, after the caller's ownership check.
+  // Covers both the old path-open writer and the descriptor-relative writer.
+  const open = fs.openSync;
+  t.mock.method(fs, 'openSync', function (file, ...args) {
+    if (typeof file === 'string' && file.startsWith(`${parent}/`) && file.endsWith('.part'))
+      replace();
+    return open.call(this, file, ...args);
+  });
+  const childProcess = require('node:child_process');
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, 'spawn', function (command, args, options) {
+    if (args.some(arg => String(arg).endsWith('owned-download.py'))) replace();
+    return spawn.call(this, command, args, options);
+  });
+  await assert.rejects(
+    bootstrapRuntime(
+      'handy-gguf-q8',
+      { layout: fixture.layout, lock: fixture.authority },
+      fixture.dependencies
+    ),
+    /changed|symlink/
+  );
+  assert.equal(swapped, true, 'the attack must run after verification, at the write boundary');
+  assert.deepEqual(fs.readdirSync(outside), ['sentinel']);
+  assert.equal(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8'), 'unchanged');
+});
+
 test('dirty source and changed build output cannot be reused for timing', async t => {
   const fixture = await runtimeFixture(t);
   const options = { layout: fixture.layout, lock: fixture.authority };
@@ -144,6 +184,23 @@ test('names missing prerequisites and does not download or run an installer', as
       { ...fixture.dependencies, tools: { cmake: path.join(fixture.root, 'missing-cmake') } }
     ),
     /Handy Q8 requires CMake and Xcode Command Line Tools\.\nInstall the documented prerequisite, then run npm run benchmark -- full --accept-source-terms again\./
+  );
+  assert.equal(fixture.state.requests, 0);
+});
+
+test('requires the selected Python for safe downloads before making an HTTP request', async t => {
+  const fixture = await runtimeFixture(t);
+  await assert.rejects(
+    bootstrapRuntime(
+      'handy-gguf-q8',
+      {
+        layout: fixture.layout,
+        lock: fixture.authority,
+        python: path.join(fixture.root, 'missing-python'),
+      },
+      fixture.dependencies
+    ),
+    /requires the selected Python 3 executable with descriptor-relative file operations/
   );
   assert.equal(fixture.state.requests, 0);
 });
@@ -193,7 +250,7 @@ test('adapter activation rejects corrupted models before probing or timing any r
   );
 });
 
-test('builds a pinned Swift dependency and bridge inside the owned holder', async t => {
+test('builds a pinned Swift bridge only after verifying its locked binary dependency', async t => {
   const fixture = await runtimeFixture(t);
   const crypto = require('node:crypto');
   fs.writeFileSync(
@@ -261,6 +318,29 @@ test('builds a pinned Swift dependency and bridge inside the owned holder', asyn
       })
     ),
   };
+  const binaryBytes = Buffer.from('UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==', 'base64');
+  const binarySha256 = crypto.createHash('sha256').update(binaryBytes).digest('hex');
+  fixture.runtime.build.binaryDependencies = [
+    {
+      url: 'https://github.com/fixture/binary/releases/download/v1/dependency.zip',
+      sha256: binarySha256,
+    },
+  ];
+  fixture.state.responses.set('/dependency', Buffer.from('altered dependency bytes'));
+  await assert.rejects(
+    bootstrapRuntime(
+      'handy-gguf-q8',
+      { layout: fixture.layout, lock: fixture.authority },
+      { ...fixture.dependencies, bridgeRoot: bridge }
+    ),
+    /SHA-256/
+  );
+  assert.equal(
+    fs.existsSync(path.join(fixture.layout.holdersRoot, 'handy-gguf-q8/bridge/.build')),
+    false
+  );
+  fixture.layout = resolveLayout({ homeDirectory: path.join(fixture.root, 'valid-download') });
+  fixture.state.responses.set('/dependency', binaryBytes);
   const ready = await bootstrapRuntime(
     'handy-gguf-q8',
     { layout: fixture.layout, lock: fixture.authority },
@@ -277,6 +357,23 @@ test('builds a pinned Swift dependency and bridge inside the owned holder', asyn
     { layout: fixture.layout, lock: fixture.authority },
     fixture.dependencies
   );
+  const binaryFile = path.join(
+    ready.artifactRoot,
+    '.binary-dependencies',
+    `${binarySha256}.zip`
+  );
+  assert.deepEqual(fs.readFileSync(binaryFile), binaryBytes);
+  fs.writeFileSync(binaryFile, 'changed cached dependency');
+  assert.throws(
+    () =>
+      verifyRuntimeInstallation(
+        'handy-gguf-q8',
+        { layout: fixture.layout, lock: fixture.authority },
+        fixture.dependencies
+      ),
+    /artifact SHA-256/
+  );
+  fs.writeFileSync(binaryFile, binaryBytes);
   fs.appendFileSync(
     path.join(ready.holderRoot, 'bridge/Sources/probe/main.swift'),
     '\nprint("changed")\n'
