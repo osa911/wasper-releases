@@ -26,8 +26,8 @@ const SOURCE_LIMIT = 2 * 1024 ** 3;
 const sourceSchema = require('../../../schema/public-corpus.schema.json');
 const validateFixture = new Ajv({ allErrors: true }).compile(sourceSchema.definitions.fixture);
 
-function sourceError(fixture, message) {
-  return new Error(`${fixture.fixtureId} (${fixture.sourceUrl}): ${message}`);
+function sourceError(fixture, message, cause) {
+  return new Error(`${fixture.fixtureId} (${fixture.sourceUrl}): ${message}`, { cause });
 }
 
 function validateUrl(value, label) {
@@ -64,6 +64,16 @@ function selectFixtures(manifests, cohort, acceptSourceTerms) {
           throw new Error(
             `invalid public source metadata: ${JSON.stringify(validateFixture.errors)}`
           );
+        const conflict = fixture.acquisition.integrityConflict;
+        if (
+          conflict &&
+          (conflict.frozenSourceSha256 !== fixture.sourceSha256 ||
+            conflict.registrySourceSha256 === conflict.frozenSourceSha256)
+        ) {
+          throw new Error(
+            'invalid public source metadata: integrity conflict must bind the frozen source hash and a different registry hash'
+          );
+        }
         if (
           !/^[a-z]{2}-(short|long)-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(fixture.fixtureId) ||
           !fixture.fixtureId.startsWith(`${fixture.language}-${fixture.cohort}-`) ||
@@ -112,13 +122,16 @@ function selectFixtures(manifests, cohort, acceptSourceTerms) {
   if (blocked.length)
     throw new Error(
       blocked
-        .map(
-          fixture =>
-            sourceError(
-              fixture,
-              `manual-authorized-input-required: ${fixture.acquisition.reason}`
-            ).message
-        )
+        .map(fixture => {
+          const conflict = fixture.acquisition.integrityConflict;
+          const integrity = conflict
+            ? `; integrity-conflict: ${conflict.reason} Frozen source SHA-256: ${conflict.frozenSourceSha256}; registry source SHA-256: ${conflict.registrySourceSha256}; source locator: ${conflict.sourceLocatorStatus}`
+            : '';
+          return sourceError(
+            fixture,
+            `manual-authorized-input-required: ${fixture.acquisition.reason}${integrity}`
+          ).message;
+        })
         .join('\n')
     );
   return fixtures;
@@ -398,6 +411,8 @@ async function verifyWav(storage, wavPath, fixture) {
 async function prepareFixture(storage, fixture) {
   const part = path.join(storage.downloads, `${fixture.fixtureId}.part`);
   let stage;
+  let wavPath;
+  let failure;
   let published = false;
   try {
     storage.check();
@@ -439,7 +454,7 @@ async function prepareFixture(storage, fixture) {
     } finally {
       fs.closeSync(fd);
     }
-    const wavPath = path.join(stage, 'normalized.wav');
+    wavPath = path.join(stage, 'normalized.wav');
     storage.check();
     await execute(
       NORMALIZED_AUDIO_TRANSFORM.tool,
@@ -482,14 +497,32 @@ async function prepareFixture(storage, fixture) {
       attribution: fixture.attribution,
     };
   } catch (error) {
-    throw sourceError(fixture, error.message);
+    failure = sourceError(fixture, error.message, error);
+    throw failure;
   } finally {
     if (!published) {
-      storage.check();
-      for (const target of [...storage.files.keys()]) storage.remove(target);
-      if (stage) {
-        fs.rmdirSync(stage);
-        storage.directories.delete(stage);
+      try {
+        storage.check();
+        // FFmpeg can create its output before returning a failure. Adopt only
+        // a regular, unshared file in this still-verified attempt directory.
+        if (wavPath && !storage.files.has(wavPath)) {
+          try {
+            storage.files.set(wavPath, storage.identity(storage.regular(wavPath)));
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+        }
+        for (const target of [...storage.files.keys()]) storage.remove(target);
+        if (stage) {
+          fs.rmdirSync(stage);
+          storage.directories.delete(stage);
+        }
+      } catch (cleanupError) {
+        if (!failure) throw sourceError(fixture, cleanupError.message, cleanupError);
+        // Keep the original failure as the primary diagnostic even if a cache
+        // replacement or unsafe output prevents cleanup.
+        failure.cleanupError = cleanupError;
+        failure.message += `; cleanup refused: ${cleanupError.message}`;
       }
     } else {
       for (const target of [...storage.files.keys()])

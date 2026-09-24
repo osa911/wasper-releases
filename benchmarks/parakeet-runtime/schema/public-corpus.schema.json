@@ -244,6 +244,22 @@
                 },
                 "referenceAdapter": {
                   "enum": ["white-house-pdf-v1", "royal-srt-v1"]
+                },
+                "integrityConflict": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "reason",
+                    "frozenSourceSha256",
+                    "registrySourceSha256",
+                    "sourceLocatorStatus"
+                  ],
+                  "properties": {
+                    "reason": { "type": "string", "minLength": 1 },
+                    "frozenSourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                    "registrySourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                    "sourceLocatorStatus": { "const": "unverified-against-frozen-identity" }
+                  }
                 }
               }
             }

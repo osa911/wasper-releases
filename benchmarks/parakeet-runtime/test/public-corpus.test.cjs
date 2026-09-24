@@ -4,18 +4,40 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { resolveLayout, OWNER_FILE } = require('../src/config.cjs');
 const { preparePublicCorpus } = require('../src/runtime/corpus/public-corpus.cjs');
 
 const packageRoot = path.resolve(__dirname, '..');
-const scratchRoot = path.resolve(packageRoot, '../../.superpowers/sdd');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
+test('a standalone package runs its HTTP fixture test without an ignored scratch directory', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parakeet-standalone-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const standalone = path.join(root, 'benchmarks', 'parakeet-runtime');
+  fs.cpSync(packageRoot, standalone, { recursive: true });
+  assert.equal(fs.existsSync(path.join(root, '.superpowers')), false);
+  const result = spawnSync(
+    process.execPath,
+    ['--test', '--test-name-pattern=^downloads a short fixture', 'test/public-corpus.test.cjs'],
+    {
+      cwd: standalone,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.startsWith('NODE_TEST_'))
+      ),
+    }
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /downloads a short fixture/);
+});
+
 async function fixtureServer(t, cohort = 'short') {
-  const root = fs.mkdtempSync(path.join(scratchRoot, 'task-4-test-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'parakeet-corpus-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const layout = resolveLayout({ homeDirectory: root });
   // Synthesized silence and text are test material, not corpus material.
@@ -93,6 +115,87 @@ async function fixtureServer(t, cohort = 'short') {
     prepare,
   };
 }
+
+async function failAfterFfmpegOutput(f, { replaceWithSymlink = false } = {}) {
+  const realFfmpeg = execFileSync('which', ['ffmpeg'], { encoding: 'utf8' }).trim();
+  const bin = path.join(f.root, 'failure-bin');
+  fs.mkdirSync(bin);
+  const witness = path.join(f.root, 'normalization-failure.json');
+  const external = path.join(f.root, 'external-sentinel.wav');
+  fs.writeFileSync(external, 'external data');
+  // The real encoder writes a WAV header, then -abort_on empty_output makes
+  // FFmpeg itself fail. The wrapper records its real status/output and forwards
+  // the original diagnostic; it does not synthesize a subprocess failure.
+  fs.writeFileSync(
+    path.join(bin, 'ffmpeg'),
+    `#!${process.execPath}
+'use strict';
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+const output = args.pop();
+const result = spawnSync(${JSON.stringify(realFfmpeg)}, [...args, '-t', '0', '-abort_on', 'empty_output', output], { encoding: 'utf8' });
+const bytes = fs.statSync(output).size;
+fs.writeFileSync(${JSON.stringify(witness)}, JSON.stringify({ status: result.status, stderr: result.stderr, bytes }));
+if (${replaceWithSymlink}) {
+  fs.renameSync(output, output + '.displaced');
+  fs.symlinkSync(${JSON.stringify(external)}, output);
+}
+process.stderr.write(result.stderr);
+process.exit(result.status);
+`,
+    { mode: 0o700 }
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
+  let failure;
+  try {
+    await f.prepare();
+  } catch (error) {
+    failure = error;
+  } finally {
+    process.env.PATH = previousPath;
+  }
+  const observed = JSON.parse(fs.readFileSync(witness, 'utf8'));
+  assert.notEqual(observed.status, 0);
+  assert.ok(observed.bytes > 0, 'real FFmpeg created a nonempty normalized.wav before failing');
+  assert.match(observed.stderr, /Output file is empty/);
+  assert.ok(failure, 'normalization must reject');
+  return { failure, observed, external };
+}
+
+test('post-output FFmpeg failure removes its partial WAV and preserves the encoder diagnostic', async t => {
+  const f = await fixtureServer(t);
+  const { failure } = await failAfterFfmpegOutput(f);
+  assert.deepEqual(
+    {
+      diagnostic: /Output file is empty/.test(failure.message),
+      cleanupMaskedError: /ENOTEMPTY/.test(failure.message),
+      downloads: fs.readdirSync(path.join(f.layout.corpusRoot, 'downloads')),
+      fixtures: fs.readdirSync(path.join(f.layout.corpusRoot, 'fixtures')),
+    },
+    { diagnostic: true, cleanupMaskedError: false, downloads: [], fixtures: [] }
+  );
+  assert.ok(failure.message.includes(f.fixture.fixtureId));
+  assert.ok(failure.message.includes(f.fixture.sourceUrl));
+  assert.ok(fs.readdirSync(f.layout.corpusRoot).every(name => !name.startsWith('verified')));
+});
+
+test('post-output FFmpeg failure preserves its diagnostic when unsafe output cleanup is refused', async t => {
+  const f = await fixtureServer(t);
+  const { failure, external } = await failAfterFfmpegOutput(f, { replaceWithSymlink: true });
+  assert.match(failure.message, /Output file is empty/);
+  assert.match(failure.message, /cleanup/);
+  assert.equal(fs.readFileSync(external, 'utf8'), 'external data');
+  const [attempt] = fs.readdirSync(path.join(f.layout.corpusRoot, 'downloads'));
+  assert.equal(
+    fs
+      .lstatSync(path.join(f.layout.corpusRoot, 'downloads', attempt, 'normalized.wav'))
+      .isSymbolicLink(),
+    true
+  );
+  assert.deepEqual(fs.readdirSync(path.join(f.layout.corpusRoot, 'fixtures')), []);
+});
 
 test('downloads a short fixture without accepting long-source terms and publishes verified WAV metadata', async t => {
   const f = await fixtureServer(t);
@@ -237,6 +340,80 @@ test('manual input states fail closed before any request and name every blocked 
   });
   assert.equal(f.requests.length, 0);
   assert.equal(fs.existsSync(f.layout.cacheRoot), false);
+});
+
+test('the Dutch public record and acquisition error expose integrity conflict separately from media rights', async t => {
+  const f = await fixtureServer(t, 'long');
+  const dutch = require('../corpus/long-sources.json').fixtures.find(
+    fixture => fixture.fixtureId === 'nl-long-royal-household-2015'
+  );
+  const frozen = 'd97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56';
+  const registry = 'd83bad35177a6ff32f5cbca4d78d72952ccaf50bef3536281f987caadde59d40';
+  assert.equal(dutch.sourceSha256, frozen);
+  assert.equal(dutch.acquisition.state, 'manual-authorized-input-required');
+  assert.match(dutch.acquisition.reason, /media reuse/);
+  assert.equal(dutch.acquisition.integrityConflict?.frozenSourceSha256, frozen);
+  assert.equal(dutch.acquisition.integrityConflict.registrySourceSha256, registry);
+  assert.equal(
+    dutch.acquisition.integrityConflict.sourceLocatorStatus,
+    'unverified-against-frozen-identity'
+  );
+  assert.match(dutch.acquisition.integrityConflict.reason, /source.*hash.*disagree/i);
+  assert.match(dutch.acquisition.integrityConflict.reason, /MP4.*unverified/);
+  await assert.rejects(
+    preparePublicCorpus({ layout: f.layout, cohort: 'long', acceptSourceTerms: true }),
+    error => {
+      assert.ok(error.message.includes(dutch.fixtureId));
+      assert.ok(error.message.includes(dutch.sourceUrl));
+      assert.ok(error.message.includes(dutch.acquisition.reason));
+      assert.match(error.message, /integrity-conflict/);
+      assert.ok(error.message.includes(frozen));
+      assert.ok(error.message.includes(registry));
+      assert.match(error.message, /unverified-against-frozen-identity/);
+      return true;
+    }
+  );
+  assert.equal(fs.existsSync(f.layout.cacheRoot), false);
+  assert.equal(f.requests.length, 0);
+});
+
+test('integrity conflicts validate both hashes and remain exclusive to blocked acquisition', async t => {
+  const f = await fixtureServer(t, 'long');
+  const dutch = require('../corpus/long-sources.json').fixtures.find(
+    fixture => fixture.fixtureId === 'nl-long-royal-household-2015'
+  );
+  const fixtures = f.sourceManifests[0].fixtures;
+  fixtures[0] = structuredClone(dutch);
+  await assert.rejects(f.prepare({ acceptSourceTerms: true }), /integrity-conflict/);
+  for (const mutate of [
+    fixture => {
+      fixture.acquisition.integrityConflict.frozenSourceSha256 = '0'.repeat(64);
+    },
+    fixture => {
+      fixture.acquisition.integrityConflict.registrySourceSha256 = fixture.sourceSha256;
+    },
+    fixture => {
+      delete fixture.acquisition.integrityConflict.registrySourceSha256;
+    },
+    fixture => {
+      fixture.acquisition.integrityConflict.sourceLocatorStatus = 'verified';
+    },
+    fixture => {
+      fixture.acquisition.integrityConflict.privateNotes = 'not publishable';
+    },
+    fixture => {
+      fixture.acquisition.state = 'automatic';
+    },
+  ]) {
+    fixtures[0] = structuredClone(dutch);
+    mutate(fixtures[0]);
+    await assert.rejects(
+      f.prepare({ acceptSourceTerms: true }),
+      /invalid public source metadata/
+    );
+  }
+  assert.equal(fs.existsSync(f.layout.cacheRoot), false);
+  assert.equal(f.requests.length, 0);
 });
 
 test('verifies the archive and both members and derives the exact mTEDx reference after acceptance', async t => {

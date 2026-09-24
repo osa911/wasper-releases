@@ -571,6 +571,12 @@
       "acquisition": {
         "state": "manual-authorized-input-required",
         "reason": "The publisher does not grant media reuse for this item. Separate authority is required for the exact historical input.",
+        "integrityConflict": {
+          "reason": "The frozen and registry source hashes disagree. The current MP4 locator is unverified against the frozen source identity.",
+          "frozenSourceSha256": "d97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56",
+          "registrySourceSha256": "d83bad35177a6ff32f5cbca4d78d72952ccaf50bef3536281f987caadde59d40",
+          "sourceLocatorStatus": "unverified-against-frozen-identity"
+        },
         "referenceSourceSha256": "3d5546911b48c1ed2a62da9806ee79df6a21ae2dc9ff74591816c9ff509b5e5a",
         "referenceAdapter": "royal-srt-v1"
       }
