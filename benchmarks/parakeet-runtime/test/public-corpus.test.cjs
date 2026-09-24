@@ -179,6 +179,30 @@ process.exit(result.status);
   return { failure, observed, external };
 }
 
+async function failWithOversizedFfmpegOutput(f) {
+  const bin = path.join(f.root, 'oversized-output-bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, 'ffmpeg'),
+    `#!${process.execPath}
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const output = process.argv.at(-1);
+const descriptor = Number(path.basename(output));
+fs.writeSync(descriptor, Buffer.alloc(1024 * 1024));
+`,
+    { mode: 0o700 }
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
+  try {
+    await assert.rejects(f.prepare(), /normalized WAV.*(?:byte cap|too large|exceeds)/i);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+}
+
 test('post-output FFmpeg failure removes its partial WAV and preserves the encoder diagnostic', async t => {
   const f = await fixtureServer(t);
   const { failure } = await failAfterFfmpegOutput(f);
@@ -194,6 +218,35 @@ test('post-output FFmpeg failure removes its partial WAV and preserves the encod
   assert.ok(failure.message.includes(f.fixture.fixtureId));
   assert.ok(failure.message.includes(f.fixture.sourceUrl));
   assert.ok(fs.readdirSync(f.layout.corpusRoot).every(name => !name.startsWith('verified')));
+});
+
+test('a controlled oversized FFmpeg result hits the WAV byte cap and leaves no published fixture', async t => {
+  const f = await fixtureServer(t);
+
+  await failWithOversizedFfmpegOutput(f);
+
+  assert.deepEqual(fs.readdirSync(path.join(f.layout.corpusRoot, 'fixtures')), []);
+  assert.deepEqual(fs.readdirSync(path.join(f.layout.corpusRoot, 'downloads')), []);
+});
+
+test('corpus acquisition rejects a local HTTP redirect before it can download or publish a fixture', async t => {
+  const f = await fixtureServer(t);
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options });
+    assert.equal(options.redirect, 'manual');
+    return {
+      status: 302,
+      ok: false,
+      headers: { get: name => (name === 'location' ? 'http://127.0.0.1/attacker.wav' : null) },
+    };
+  });
+
+  await assert.rejects(f.prepare(), /redirect URL.*public HTTPS/i);
+
+  assert.deepEqual(requests.map(request => request.url), [f.fixture.sourceUrl]);
+  assert.deepEqual(fs.readdirSync(path.join(f.layout.corpusRoot, 'downloads')), []);
+  assert.deepEqual(fs.readdirSync(path.join(f.layout.corpusRoot, 'fixtures')), []);
 });
 
 test('post-output FFmpeg failure preserves its diagnostic when unsafe output cleanup is refused', async t => {

@@ -13,6 +13,12 @@ const REQUIRED_TOOLS = Object.freeze([
   { id: 'cmake', command: 'cmake', remediation: 'brew install cmake' },
   { id: 'xcrun', command: 'xcrun', remediation: 'xcode-select --install' },
 ]);
+const BOOTSTRAP_PYTHON_PROBE = Object.freeze([
+  '-I',
+  '-B',
+  '-c',
+  'import os; assert {os.open, os.link, os.unlink} <= os.supports_dir_fd',
+]);
 
 function existingAncestor(candidate) {
   let current = candidate;
@@ -73,6 +79,21 @@ function defaultProbeAuditPython(executable, arguments_) {
   return result.error === undefined && result.status === 0;
 }
 
+function defaultProbeBootstrapPython(executable, arguments_) {
+  const result = childProcess.spawnSync(executable, arguments_, { encoding: 'utf8' });
+  return result.error === undefined && result.status === 0;
+}
+
+function defaultPythonPackageVersion(executable, packageName) {
+  return commandOutput(executable, [
+    '-I',
+    '-B',
+    '-c',
+    'import importlib.metadata,sys; print(importlib.metadata.version(sys.argv[1]))',
+    packageName,
+  ]);
+}
+
 function defaultNetworkAccess() {
   return Object.values(os.networkInterfaces())
     .flat()
@@ -120,6 +141,8 @@ function doctor(layout, runtimeLock, dependencies = {}) {
   const systemInfo = dependencies.systemInfo ?? defaultSystemInfo;
   const freeDiskBytes = dependencies.freeDiskBytes ?? defaultFreeDiskBytes;
   const findTool = dependencies.findTool ?? defaultFindTool;
+  const probeBootstrapPython = dependencies.probeBootstrapPython ?? defaultProbeBootstrapPython;
+  const pythonPackageVersion = dependencies.pythonPackageVersion ?? defaultPythonPackageVersion;
   const publicAudit = require('./public-audit.cjs');
   const auditPythonExecutable =
     dependencies.auditPythonExecutable ?? publicAudit.publicAuditPythonExecutable;
@@ -196,6 +219,63 @@ function doctor(layout, runtimeLock, dependencies = {}) {
           ? executable
           : `${tool.command} is unavailable.`,
         tool.remediation
+      )
+    );
+  }
+
+  const bootstrapPython = findTool('python3');
+  const bootstrapPythonReady =
+    typeof bootstrapPython === 'string' &&
+    path.isAbsolute(bootstrapPython) &&
+    probeBootstrapPython(bootstrapPython, BOOTSTRAP_PYTHON_PROBE) === true;
+  checks.push(
+    state(
+      'bootstrap-python',
+      bootstrapPythonReady,
+      bootstrapPythonReady
+        ? bootstrapPython
+        : typeof bootstrapPython === 'string'
+          ? `${bootstrapPython} cannot run the descriptor-relative bootstrap probe.`
+          : 'python3 is unavailable.',
+      'brew install python@3.12'
+    )
+  );
+
+  const swiftRequired = runtimeLock.runtimes.some(runtime => runtime.build?.kind === 'swift');
+  if (swiftRequired) {
+    const swift = findTool('swift');
+    checks.push(
+      state(
+        'swift',
+        typeof swift === 'string' && swift !== '',
+        typeof swift === 'string' && swift !== '' ? swift : 'swift is unavailable.',
+        'xcode-select --install'
+      )
+    );
+  }
+
+  const pinnedPythonPackages = new Map();
+  for (const runtime of runtimeLock.runtimes) {
+    if (runtime.reproduction?.state !== 'ready') continue;
+    for (const pkg of runtime.pythonPackages ?? []) {
+      pinnedPythonPackages.set(`${pkg.name}==${pkg.version}`, pkg);
+    }
+  }
+  for (const pkg of [...pinnedPythonPackages.values()].sort((left, right) =>
+    left.name.localeCompare(right.name)
+  )) {
+    const actual = bootstrapPythonReady ? pythonPackageVersion(bootstrapPython, pkg.name) : null;
+    const ready = actual === pkg.version;
+    checks.push(
+      state(
+        `python-package:${pkg.name}`,
+        ready,
+        ready
+          ? `${pkg.name}==${actual} in ${bootstrapPython}`
+          : bootstrapPythonReady
+            ? `${pkg.name}==${pkg.version} is required in ${bootstrapPython}; found ${actual ?? 'missing'}.`
+            : `${pkg.name}==${pkg.version} requires a working python3 bootstrap executable.`,
+        `${bootstrapPythonReady ? bootstrapPython : 'python3'} -m pip install ${pkg.name}==${pkg.version}`
       )
     );
   }

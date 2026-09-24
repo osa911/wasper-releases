@@ -15,6 +15,8 @@ const LAYOUT_OPTIONS = new Map([
 ]);
 const MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
 const PUBLIC_RUN_SCHEMA = 'wasper.parakeet-runtime-benchmark.public-run.v1';
+const READY_SHORT_RUNTIME_COUNT = 5;
+const READY_SHORT_VERIFICATION = 'partial-non-comparable';
 
 function digest(value) {
   const { canonicalJson } = require('./asr-quality/manifest.cjs');
@@ -71,8 +73,8 @@ function parseCommandArguments(argv) {
     options[option] = value;
     index += 1;
   }
-  if (command === 'benchmark' && options.mode !== 'full') {
-    throw new TypeError('benchmark requires the full mode');
+  if (command === 'benchmark' && !['full', 'ready-short'].includes(options.mode)) {
+    throw new TypeError('benchmark requires the full or ready-short mode');
   }
   if (command !== 'benchmark' && options.mode !== null) {
     throw new TypeError(`${command} does not accept a benchmark mode`);
@@ -98,12 +100,29 @@ function createCommandPlan(argv, { homeDirectory } = {}) {
   return Object.freeze({ command, layout, mode, cohort, acceptSourceTerms, writes: false });
 }
 
-function createPublicRunIdentity(manifest, runtimeLock) {
+function readyShortRuntimeDescriptors(runtimeLock) {
+  const readyIds = new Set(
+    runtimeLock.runtimes
+      .filter(runtime => runtime.reproduction?.state === 'ready')
+      .map(runtime => runtime.id)
+  );
+  const descriptors = RUNTIME_DESCRIPTORS.filter(runtime => readyIds.has(runtime.id));
+  if (descriptors.length !== READY_SHORT_RUNTIME_COUNT) {
+    throw new Error(`ready-short requires exactly ${READY_SHORT_RUNTIME_COUNT} publicly ready runtimes`);
+  }
+  return descriptors;
+}
+
+function createPublicRunIdentity(manifest, runtimeLock, { mode = 'full', runtimeDescriptors } = {}) {
   if (manifest?.schema !== 'wasper.public-run-corpus.v1') {
     throw new TypeError('a verified public corpus manifest is required');
   }
+  const cells = runtimeDescriptors ?? RUNTIME_DESCRIPTORS;
   return Object.freeze({
     schema: PUBLIC_RUN_SCHEMA,
+    mode,
+    verification: mode === 'ready-short' ? READY_SHORT_VERIFICATION : 'full-comparison',
+    cohort: manifest.cohort,
     runtimeLockSha256: digest(runtimeLock),
     corpusSha256: digest(manifest),
     hardware: {
@@ -130,7 +149,7 @@ function createPublicRunIdentity(manifest, runtimeLock) {
       order: 'three sequential rotated runtime passes',
     },
     scoring: { scope: 'full references', metrics: ['WER', 'CER'] },
-    runtimeCells: RUNTIME_DESCRIPTORS,
+    runtimeCells: cells,
   });
 }
 
@@ -155,21 +174,33 @@ async function runBenchmark({
   const createRuntimeAdapter =
     createRuntimeAdapterImpl ?? require('./runtime/adapters/index.cjs').createRuntimeAdapter;
   const runtimeLock = loadRuntimeLock();
+  const runtimeDescriptors =
+    plan.mode === 'ready-short' ? readyShortRuntimeDescriptors(runtimeLock) : RUNTIME_DESCRIPTORS;
+  const cohort = plan.mode === 'ready-short' ? 'short' : 'all';
 
-  for (const runtime of RUNTIME_DESCRIPTORS) {
+  for (const runtime of runtimeDescriptors) {
     await bootstrapRuntime(runtime.id, { layout: plan.layout, lock: runtimeLock });
   }
   const prepared = await recoverCorpus({
     layout: plan.layout,
-    cohort: 'all',
+    cohort,
     acceptSourceTerms: plan.acceptSourceTerms,
   });
-  await smokeRuntimeAdapters({ layout: plan.layout, manifest: prepared.manifest, runtimeLock });
+  await smokeRuntimeAdapters({
+    layout: plan.layout,
+    manifest: prepared.manifest,
+    runtimeLock,
+    runtimeDescriptors,
+  });
   return runRuntimeBenchmark({
     layout: plan.layout,
     manifest: prepared.manifest,
-    runIdentity: createPublicRunIdentity(prepared.manifest, runtimeLock),
+    runIdentity: createPublicRunIdentity(prepared.manifest, runtimeLock, {
+      mode: plan.mode,
+      runtimeDescriptors,
+    }),
     maxPhysicalFootprintBytes: MAX_PHYSICAL_FOOTPRINT_BYTES,
+    runtimeDescriptors,
     adapterFactory: runtime => createRuntimeAdapter(runtime.id, { layout: plan.layout, runtimeLock }),
   });
 }
@@ -271,6 +302,8 @@ async function runCli(
   const summary = Object.freeze({
     command: plan.command,
     writes: true,
+    mode: plan.mode,
+    verification: plan.mode === 'ready-short' ? READY_SHORT_VERIFICATION : 'full-comparison',
     runId: result.runId,
     runDirectory: result.runDirectory,
   });
@@ -283,6 +316,7 @@ module.exports = {
   createPublicRunIdentity,
   main: runCli,
   parseCommandArguments,
+  readyShortRuntimeDescriptors,
   runBenchmark,
   runCli,
 };

@@ -64,6 +64,74 @@ test('rejects HTTP hash mismatches without promoting an artifact or building', a
   );
 });
 
+test('follows only declared HTTPS artifact redirect hosts and never promotes rejected hops', async t => {
+  const fixture = await runtimeFixture(t);
+  const artifact = fixture.runtime.artifacts[0];
+  artifact.redirectHosts = ['huggingface.co', 'cdn-lfs.hf.co'];
+  const target = path.join(fixture.layout.artifactsRoot, 'handy-gguf-q8', artifact.path);
+  const buildOutput = path.join(fixture.layout.holdersRoot, 'handy-gguf-q8', 'build-shared', 'probe');
+
+  const permittedRequests = [];
+  const permittedFetch = async (url, options) => {
+    permittedRequests.push({ url, options });
+    assert.equal(options.redirect, 'manual');
+    if (url === artifact.url) {
+      return {
+        status: 302,
+        ok: false,
+        headers: { get: name => (name === 'location' ? 'https://cdn-lfs.hf.co/fixture/model.bin' : null) },
+      };
+    }
+    assert.equal(url, 'https://cdn-lfs.hf.co/fixture/model.bin');
+    return {
+      status: 200,
+      ok: true,
+      body: require('node:stream').Readable.from([fixture.state.body]),
+    };
+  };
+
+  await bootstrapRuntime(
+    'handy-gguf-q8',
+    { layout: fixture.layout, lock: fixture.authority },
+    { ...fixture.dependencies, fetchImpl: permittedFetch }
+  );
+  assert.deepEqual(
+    permittedRequests.map(request => request.url),
+    [artifact.url, 'https://cdn-lfs.hf.co/fixture/model.bin']
+  );
+
+  for (const redirect of [
+    'https://unlisted.example.invalid/model.bin',
+    'http://cdn-lfs.hf.co/model.bin',
+    'https://127.0.0.1/model.bin',
+  ]) {
+    fs.rmSync(fixture.layout.cacheRoot, { recursive: true, force: true });
+    const rejectedRequests = [];
+    await assert.rejects(
+      bootstrapRuntime(
+        'handy-gguf-q8',
+        { layout: fixture.layout, lock: fixture.authority },
+        {
+          ...fixture.dependencies,
+          fetchImpl: async (url, options) => {
+            rejectedRequests.push({ url, options });
+            assert.equal(options.redirect, 'manual');
+            return {
+              status: 302,
+              ok: false,
+              headers: { get: name => (name === 'location' ? redirect : null) },
+            };
+          },
+        }
+      ),
+      /redirect.*trusted|trusted.*redirect/i
+    );
+    assert.deepEqual(rejectedRequests.map(request => request.url), [artifact.url]);
+    assert.equal(fs.existsSync(target), false, `must not promote ${redirect}`);
+    assert.equal(fs.existsSync(buildOutput), false, `must not build after ${redirect}`);
+  }
+});
+
 test('refuses an unmarked nonempty cache before HTTP', async t => {
   const fixture = await runtimeFixture(t);
   fs.mkdirSync(fixture.layout.cacheRoot, { recursive: true });
@@ -364,6 +432,7 @@ test('builds a pinned Swift bridge only after verifying its locked binary depend
       sha256: binarySha256,
     },
   ];
+  fixture.runtime.artifactRedirectHosts['github.com'] = ['github.com'];
   fixture.state.responses.set('/dependency', Buffer.from('altered dependency bytes'));
   await assert.rejects(
     bootstrapRuntime(

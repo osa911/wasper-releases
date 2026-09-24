@@ -55,6 +55,7 @@ async function smokeRuntimeAdapters({
   layout = resolveLayout(),
   manifest,
   runtimeLock,
+  runtimeDescriptors = RUNTIME_DESCRIPTORS,
   createRuntimeAdapterImpl = createRuntimeAdapter,
   now,
 }) {
@@ -91,7 +92,7 @@ async function smokeRuntimeAdapters({
   const persist = () => store.writeArtifact('smoke-evidence.json', evidence);
   persist();
 
-  for (const runtime of RUNTIME_DESCRIPTORS) {
+  for (const runtime of runtimeDescriptors) {
     const cell = { runtimeId: runtime.id, status: 'running' };
     evidence.cells.push(cell);
     persist();

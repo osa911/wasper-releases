@@ -22,9 +22,12 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const SCHEMA = 'wasper.public-corpus-sources.v1';
 const REFERENCE_LIMIT = 8 * 1024 ** 2;
 const SOURCE_LIMIT = 2 * 1024 ** 3;
+const NORMALIZED_WAV_BYTES_PER_SECOND = 16_000 * 2;
+const NORMALIZED_WAV_CONTAINER_ALLOWANCE_BYTES = 4096;
 const ARCHIVE_MEMBER_READER = path.join(__dirname, 'read-archive-member.py');
 const NORMALIZED_AUDIO_RUNNER = path.join(__dirname, 'run-normalized-audio.py');
 const NORMALIZED_AUDIO_OUTPUT_MARKER = '__WASPER_NORMALIZED_WAV_DESCRIPTOR__';
+const MAX_SOURCE_REDIRECTS = 5;
 const TRUSTED_PYTHON_ENV = Object.freeze({
   LANG: 'C',
   LC_ALL: 'C',
@@ -46,7 +49,26 @@ function trustedPython() {
   return executable;
 }
 
-function validateUrl(value, label) {
+function loopbackHttpHost(hostname) {
+  return hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+function privateHost(hostname) {
+  if (hostname === 'localhost' || hostname === '[::1]') return true;
+  const octets = hostname.split('.').map(Number);
+  if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet))) return false;
+  const [first, second] = octets;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
+}
+
+function validateUrl(value, label, { allowLoopbackHttp = true } = {}) {
   let url;
   try {
     url = new URL(value);
@@ -57,12 +79,14 @@ function validateUrl(value, label) {
     url.username ||
     url.password ||
     url.hash ||
-    (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === '127.0.0.1'))
+    (url.protocol === 'https:' && privateHost(url.hostname)) ||
+    (url.protocol !== 'https:' && !(allowLoopbackHttp && url.protocol === 'http:' && loopbackHttpHost(url.hostname)))
   ) {
     throw new Error(
-      `${label} must use HTTPS without credentials, or loopback HTTP for fixtures`
+      `${label} must use public HTTPS without credentials, or loopback HTTP for fixtures`
     );
   }
+  return url;
 }
 
 function selectFixtures(manifests, cohort, acceptSourceTerms) {
@@ -164,6 +188,29 @@ function ownedStorage(supplied) {
   });
 }
 
+async function fetchSource(url) {
+  let destination = validateUrl(url, 'source URL');
+  for (let redirectCount = 0; redirectCount <= MAX_SOURCE_REDIRECTS; redirectCount += 1) {
+    const response = await fetch(destination.href, {
+      signal: AbortSignal.timeout(60 * 60_000),
+      redirect: 'manual',
+    });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers?.get('location');
+      await response.body?.cancel?.();
+      if (typeof location !== 'string' || location === '') {
+        throw new Error(`redirect URL has no destination: ${destination.href}`);
+      }
+      destination = validateUrl(new URL(location, destination).href, 'redirect URL', {
+        allowLoopbackHttp: false,
+      });
+      continue;
+    }
+    return { destination, response };
+  }
+  throw new Error(`source redirect limit exceeded: ${url}`);
+}
+
 async function download(storage, url, target, expectedHash, limit, label) {
   try {
     storage.regular(target);
@@ -173,7 +220,7 @@ async function download(storage, url, target, expectedHash, limit, label) {
   if (fs.existsSync(target)) {
     throw new Error(`${label} EEXIST at ${url}`);
   }
-  const response = await fetch(url, { signal: AbortSignal.timeout(60 * 60_000) });
+  const { destination, response } = await fetchSource(url);
   try {
     storage.check();
   } catch (error) {
@@ -182,10 +229,9 @@ async function download(storage, url, target, expectedHash, limit, label) {
     }
     throw error;
   }
-  validateUrl(response.url, 'redirect URL');
   if (!response.ok || !response.body) {
     await response.body?.cancel();
-    throw new Error(`${label} HTTP ${response.status} at ${url}`);
+    throw new Error(`${label} HTTP ${response.status} at ${destination.href}`);
   }
   try {
     await storage.download(target, response.body, expectedHash, limit);
@@ -312,7 +358,17 @@ async function verifyWav(storage, wavPath, fixture) {
   return audio;
 }
 
-function runNormalizedAudioTransform(storage, stage, sourcePath, wavPath) {
+function normalizedWavOutputLimit(fixture) {
+  if (!Number.isFinite(fixture.durationSeconds) || fixture.durationSeconds <= 0) {
+    throw new Error('normalized WAV duration must be positive');
+  }
+  return (
+    Math.ceil(fixture.durationSeconds * NORMALIZED_WAV_BYTES_PER_SECOND) +
+    NORMALIZED_WAV_CONTAINER_ALLOWANCE_BYTES
+  );
+}
+
+function runNormalizedAudioTransform(storage, stage, sourcePath, wavPath, maximumOutputBytes) {
   const stageDescriptor = storage.openDirectory(stage);
   const arguments_ = NORMALIZED_AUDIO_TRANSFORM.arguments.map(argument => {
     if (argument === '{sourcePath}') return sourcePath;
@@ -338,6 +394,7 @@ function runNormalizedAudioTransform(storage, stage, sourcePath, wavPath) {
           '-B',
           NORMALIZED_AUDIO_RUNNER,
           path.basename(wavPath),
+          String(maximumOutputBytes),
           ...arguments_,
         ],
         {
@@ -411,7 +468,13 @@ async function prepareFixture(storage, fixture) {
     storage.writeExclusive(referencePath, text);
     wavPath = path.join(stage, 'normalized.wav');
     storage.check();
-    await runNormalizedAudioTransform(storage, stage, sourcePath, wavPath);
+    await runNormalizedAudioTransform(
+      storage,
+      stage,
+      sourcePath,
+      wavPath,
+      normalizedWavOutputLimit(fixture)
+    );
     storage.check();
     storage.track(wavPath);
     const audio = await verifyWav(storage, wavPath, fixture);

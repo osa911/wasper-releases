@@ -45,17 +45,29 @@ function rotate(values, offset) {
   return [...values.slice(offset), ...values.slice(0, offset)];
 }
 
-function resolveRuntimeOrder(runtimeOrder) {
-  if (runtimeOrder === undefined) return null;
-  if (!Array.isArray(runtimeOrder) || runtimeOrder.length !== RUNTIME_DESCRIPTORS.length) {
-    throw new TypeError('runtimeOrder must contain every canonical runtime exactly once');
+function resolveRuntimeDescriptors(runtimeDescriptors = RUNTIME_DESCRIPTORS) {
+  if (!Array.isArray(runtimeDescriptors) || runtimeDescriptors.length === 0) {
+    throw new TypeError('runtimeDescriptors must contain canonical runtime descriptors');
   }
   const descriptorsById = new Map(
     RUNTIME_DESCRIPTORS.map(descriptor => [descriptor.id, descriptor])
   );
+  const resolved = runtimeDescriptors.map(runtime => descriptorsById.get(runtime?.id));
+  if (resolved.includes(undefined) || new Set(resolved.map(runtime => runtime.id)).size !== resolved.length) {
+    throw new TypeError('runtimeDescriptors must contain unique canonical runtime descriptors');
+  }
+  return resolved;
+}
+
+function resolveRuntimeOrder(runtimeOrder, runtimeDescriptors) {
+  if (runtimeOrder === undefined) return null;
+  if (!Array.isArray(runtimeOrder) || runtimeOrder.length !== runtimeDescriptors.length) {
+    throw new TypeError('runtimeOrder must contain every selected runtime exactly once');
+  }
+  const descriptorsById = new Map(runtimeDescriptors.map(descriptor => [descriptor.id, descriptor]));
   const resolved = runtimeOrder.map(runtimeId => descriptorsById.get(runtimeId));
   if (resolved.includes(undefined) || new Set(runtimeOrder).size !== runtimeOrder.length) {
-    throw new TypeError('runtimeOrder must contain every canonical runtime exactly once');
+    throw new TypeError('runtimeOrder must contain every selected runtime exactly once');
   }
   return resolved;
 }
@@ -140,7 +152,7 @@ function hydratePublicFixtures(manifest, layout) {
   };
 }
 
-function buildRuntimeSchedule({ manifest, seed }) {
+function buildRuntimeSchedule({ manifest, seed, runtimeDescriptors = RUNTIME_DESCRIPTORS }) {
   const fixtures = manifest?.runCorpus?.fixtures;
   if (!Array.isArray(fixtures) || fixtures.length === 0) {
     throw new TypeError('hydrated runtime corpus fixtures are required');
@@ -148,10 +160,11 @@ function buildRuntimeSchedule({ manifest, seed }) {
   const rankedFixtures = fixtures
     .map(fixture => ({ fixture, rank: hash({ fixtureId: fixture.id, seed }) }))
     .sort((left, right) => left.rank.localeCompare(right.rank));
+  const selectedRuntimeDescriptors = resolveRuntimeDescriptors(runtimeDescriptors);
   const schedule = [];
   let order = 0;
   for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
-    for (const cell of rotate(RUNTIME_DESCRIPTORS, pass - 1)) {
+    for (const cell of rotate(selectedRuntimeDescriptors, pass - 1)) {
       for (const { fixture } of rotate(rankedFixtures, pass - 1)) {
         schedule.push({
           order: order++,
@@ -355,6 +368,7 @@ async function runRuntimeBenchmark({
   maxPhysicalFootprintBytes = DEFAULT_MAX_PHYSICAL_FOOTPRINT_BYTES,
   priorMemoryExclusions,
   runtimeOrder,
+  runtimeDescriptors,
   now,
 }) {
   if (typeof adapterFactory !== 'function')
@@ -384,9 +398,14 @@ async function runRuntimeBenchmark({
       fixtures: hydrated.fixtures,
     },
   };
-  const schedule = buildRuntimeSchedule({ manifest: hydratedManifest, seed });
-  const orderedRuntimeDescriptors = resolveRuntimeOrder(runtimeOrder);
-  const baseRuntimeOrder = orderedRuntimeDescriptors ?? RUNTIME_DESCRIPTORS;
+  const selectedRuntimeDescriptors = resolveRuntimeDescriptors(runtimeDescriptors);
+  const schedule = buildRuntimeSchedule({
+    manifest: hydratedManifest,
+    seed,
+    runtimeDescriptors: selectedRuntimeDescriptors,
+  });
+  const orderedRuntimeDescriptors = resolveRuntimeOrder(runtimeOrder, selectedRuntimeDescriptors);
+  const baseRuntimeOrder = orderedRuntimeDescriptors ?? selectedRuntimeDescriptors;
   const fixtures = new Map(
     hydratedManifest.runCorpus.fixtures.map(fixture => [fixture.id, fixture])
   );

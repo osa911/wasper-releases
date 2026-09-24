@@ -6,6 +6,16 @@ const { isDeepStrictEqual } = require('node:util');
 const { RUNTIME_DESCRIPTORS } = require('./constants.cjs');
 
 const LOCK_PATH = path.resolve(__dirname, '../../locks/runtimes.json');
+const PUBLIC_ARTIFACT_REDIRECT_HOSTS = new Set([
+  'huggingface.co',
+  'cdn-lfs.hf.co',
+  'cdn-lfs-us-1.hf.co',
+  'cas-bridge.xethub.hf.co',
+  'transfer.xethub.hf.co',
+  'github.com',
+  'objects.githubusercontent.com',
+  'release-assets.githubusercontent.com',
+]);
 const readAuthority = () => JSON.parse(fs.readFileSync(LOCK_PATH, 'utf8'));
 
 function deepFreeze(value) {
@@ -43,6 +53,31 @@ function relativePath(value) {
     value.split('/').includes('.git')
   )
     throw new Error('unsafe runtime lock relative path');
+}
+
+function validateArtifactRedirectHosts(runtime) {
+  const families = runtime.artifactRedirectHosts;
+  if (families === null || typeof families !== 'object' || Array.isArray(families)) {
+    throw new Error('artifact redirect hosts must be a source-family map');
+  }
+  for (const [sourceHost, redirectHosts] of Object.entries(families)) {
+    if (
+      !PUBLIC_ARTIFACT_REDIRECT_HOSTS.has(sourceHost) ||
+      !Array.isArray(redirectHosts) ||
+      redirectHosts.length === 0 ||
+      new Set(redirectHosts).size !== redirectHosts.length ||
+      !redirectHosts.includes(sourceHost) ||
+      redirectHosts.some(host => !PUBLIC_ARTIFACT_REDIRECT_HOSTS.has(host))
+    ) {
+      throw new Error('artifact redirect host is not an approved public family member');
+    }
+  }
+  for (const artifact of [...runtime.artifacts, ...(runtime.build.binaryDependencies ?? [])]) {
+    const sourceHost = new URL(artifact.url).hostname;
+    if (!Array.isArray(families[sourceHost])) {
+      throw new Error(`artifact redirect host family is missing for ${sourceHost}`);
+    }
+  }
 }
 
 // The checked-in JSON is the authority, not a second hardcoded set of hashes.
@@ -118,6 +153,7 @@ function validateRuntimeLock(value, authority = readAuthority()) {
       if (!/^[a-f0-9]{64}$/u.test(file.sha256))
         throw new Error('invalid Swift binary dependency SHA-256');
     }
+    validateArtifactRedirectHosts(runtime);
     if (runtime.release) {
       publicUrl(runtime.release.url);
       if (

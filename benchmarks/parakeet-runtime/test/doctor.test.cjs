@@ -58,6 +58,12 @@ function readyDependencies(overrides = {}) {
     probeAuditPython() {
       return true;
     },
+    probeBootstrapPython() {
+      return true;
+    },
+    pythonPackageVersion(_executable, packageName) {
+      return { 'onnx-asr': '0.12.0', onnxruntime: '1.30.0' }[packageName] ?? null;
+    },
     networkAccess() {
       return true;
     },
@@ -185,7 +191,6 @@ test('probes the exact public-audit Python executable instead of PATH python3', 
         return true;
       },
       findTool(name) {
-        assert.notEqual(name, 'python3');
         return `/usr/bin/${name}`;
       },
     })
@@ -199,6 +204,75 @@ test('probes the exact public-audit Python executable instead of PATH python3', 
   assert.match(probes[0].arguments_[4], /follow_symlinks=False/u);
   assert.equal(check(result, 'public-audit-python').state, 'ready');
   assert.equal(check(result, 'public-audit-python').detail, '/opt/public-audit-python');
+  assert.equal(fs.existsSync(layout.cacheRoot), false);
+});
+
+test('checks the bootstrap python3, Swift, and each unique ready-runtime package without writing', t => {
+  const layout = temporaryLayout(t);
+  const packageProbes = [];
+  const lock = {
+    runtimes: [
+      {
+        id: 'ready-onnx',
+        label: 'Ready ONNX',
+        reproduction: { state: 'ready', limitations: [] },
+        build: { kind: 'none' },
+        pythonPackages: [
+          { name: 'onnx-asr', version: '0.12.0' },
+          { name: 'onnxruntime', version: '1.30.0' },
+        ],
+      },
+      {
+        id: 'ready-duplicate',
+        label: 'Ready duplicate',
+        reproduction: { state: 'ready', limitations: [] },
+        build: { kind: 'none' },
+        pythonPackages: [{ name: 'onnx-asr', version: '0.12.0' }],
+      },
+      {
+        id: 'blocked-swift',
+        label: 'Blocked Swift',
+        reproduction: { state: 'blocked', limitations: ['historical identity unavailable'] },
+        build: { kind: 'swift' },
+        pythonPackages: [],
+      },
+    ],
+  };
+
+  const result = doctor(
+    layout,
+    lock,
+    readyDependencies({
+      findTool(name) {
+        if (name === 'python3') return '/opt/homebrew/bin/python3';
+        if (name === 'swift') return null;
+        return `/usr/bin/${name}`;
+      },
+      probeBootstrapPython(executable, arguments_) {
+        assert.equal(executable, '/opt/homebrew/bin/python3');
+        assert.deepEqual(arguments_.slice(0, 3), ['-I', '-B', '-c']);
+        return true;
+      },
+      pythonPackageVersion(executable, packageName) {
+        packageProbes.push({ executable, packageName });
+        return packageName === 'onnx-asr' ? '0.12.0' : 'missing';
+      },
+    })
+  );
+
+  assert.equal(check(result, 'bootstrap-python').state, 'ready');
+  assert.equal(check(result, 'swift').state, 'blocked');
+  assert.equal(check(result, 'swift').remediation, 'xcode-select --install');
+  assert.equal(check(result, 'python-package:onnx-asr').state, 'ready');
+  assert.equal(check(result, 'python-package:onnxruntime').state, 'blocked');
+  assert.equal(
+    check(result, 'python-package:onnxruntime').remediation,
+    '/opt/homebrew/bin/python3 -m pip install onnxruntime==1.30.0'
+  );
+  assert.deepEqual(packageProbes, [
+    { executable: '/opt/homebrew/bin/python3', packageName: 'onnx-asr' },
+    { executable: '/opt/homebrew/bin/python3', packageName: 'onnxruntime' },
+  ]);
   assert.equal(fs.existsSync(layout.cacheRoot), false);
 });
 

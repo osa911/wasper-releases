@@ -14,16 +14,20 @@ const { isInside } = require('../config.cjs');
 
 const execute = promisify(execFile);
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const MAX_ARTIFACT_REDIRECTS = 5;
 const RETRY =
   'Install the documented prerequisite, then run npm run benchmark -- full --accept-source-terms again.';
 
 function runtimeArtifacts(runtime) {
+  const withRedirectHosts = artifact => {
+    const host = new URL(artifact.url).hostname;
+    return { ...artifact, redirectHosts: runtime.artifactRedirectHosts?.[host] };
+  };
   return [
-    ...runtime.artifacts,
-    ...(runtime.build.binaryDependencies ?? []).map(dependency => ({
-      ...dependency,
-      path: `.binary-dependencies/${dependency.sha256}.zip`,
-    })),
+    ...runtime.artifacts.map(withRedirectHosts),
+    ...(runtime.build.binaryDependencies ?? []).map(dependency =>
+      withRedirectHosts({ ...dependency, path: `.binary-dependencies/${dependency.sha256}.zip` })
+    ),
   ];
 }
 
@@ -119,6 +123,49 @@ async function prerequisites(runtime, python, storage, env, tools) {
   }
 }
 
+function trustedArtifactUrl(value, redirectHosts) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('artifact redirect URL is invalid');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    !Array.isArray(redirectHosts) ||
+    !redirectHosts.includes(url.hostname)
+  ) {
+    throw new Error(`artifact redirect is not a trusted HTTPS host: ${value}`);
+  }
+  return url;
+}
+
+async function fetchArtifact(artifact, fetchImpl) {
+  let url = trustedArtifactUrl(artifact.url, artifact.redirectHosts);
+  for (let redirectCount = 0; redirectCount <= MAX_ARTIFACT_REDIRECTS; redirectCount += 1) {
+    const response = await fetchImpl(url.href, {
+      signal: AbortSignal.timeout(30 * 60 * 1000),
+      redirect: 'manual',
+    });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers?.get('location');
+      await response.body?.cancel?.();
+      if (typeof location !== 'string' || location === '') {
+        throw new Error(`artifact redirect has no destination: ${url.href}`);
+      }
+      url = trustedArtifactUrl(new URL(location, url).href, artifact.redirectHosts);
+      continue;
+    }
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}: ${url.href}`);
+    return response;
+  }
+  throw new Error(`artifact redirect limit exceeded: ${artifact.url}`);
+}
+
 async function download(artifact, root, storage, fetchImpl, python, env) {
   const target = path.join(root, artifact.path);
   storage.directory(path.dirname(target));
@@ -131,11 +178,7 @@ async function download(artifact, root, storage, fetchImpl, python, env) {
       throw new Error(`SHA-256 or size mismatch: ${artifact.path}`);
     return target;
   }
-  const response = await fetchImpl(artifact.url, {
-    signal: AbortSignal.timeout(30 * 60 * 1000),
-  });
-  if (!response.ok || !response.body)
-    throw new Error(`HTTP ${response.status}: ${artifact.url}`);
+  const response = await fetchArtifact(artifact, fetchImpl);
   // Node has no openat/linkat API. Pass a verified directory descriptor to a
   // stdlib-only Python writer; it never resolves a destination parent path.
   const fd = storage.openDirectory(path.dirname(target));

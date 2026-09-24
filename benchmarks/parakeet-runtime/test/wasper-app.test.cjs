@@ -274,7 +274,7 @@ test('routes --wasper-app from the smoke command into the resolved layout', asyn
     [
       'smoke',
       '--output-dir',
-      'runs/task-3-smoke',
+      'runs',
       '--wasper-app',
       app.appPath,
     ],

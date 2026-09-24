@@ -46,6 +46,9 @@
         "url": "https://huggingface.co/osa911/wasper-parakeet-tdt-0.6b-v3-onnx-int8",
         "revision": "6f123e3b29b0fcd3edc305f4700b5cf28a735b96"
       },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"]
+      },
       "artifacts": [
         {
           "path": "decoder_joint-int8.onnx",
@@ -153,6 +156,9 @@
         "url": "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3",
         "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15"
       },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"]
+      },
       "artifacts": [
         {
           "path": "config.json",
@@ -250,6 +256,9 @@
         "url": "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3",
         "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15"
       },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"]
+      },
       "artifacts": [],
       "languagePolicy": {
         "mode": "automatic",
@@ -329,6 +338,9 @@
       "model": {
         "url": "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf",
         "revision": "90f082450fcbacdb54e5900c44ef697c9ea59622"
+      },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"]
       },
       "artifacts": [
         {
@@ -427,6 +439,9 @@
         "url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
         "revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b"
       },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"]
+      },
       "artifacts": [
         {
           "path": "parakeet-tdt-0.6b-v3.q8_0.gguf",
@@ -490,6 +505,9 @@
       "model": {
         "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx",
         "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
+      },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"]
       },
       "artifacts": [
         {
@@ -612,6 +630,10 @@
           "status": "unresolved-conflict",
           "url": "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/blob/7dd20fe6b1797d35f5e3307e8b1732d9a178edfe/README.md"
         }
+      },
+      "artifactRedirectHosts": {
+        "huggingface.co": ["huggingface.co", "cdn-lfs.hf.co", "cdn-lfs-us-1.hf.co", "cas-bridge.xethub.hf.co", "transfer.xethub.hf.co"],
+        "github.com": ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]
       },
       "artifacts": [
         {

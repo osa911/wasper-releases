@@ -63,7 +63,7 @@ test('resolveLayout canonicalizes explicit cache and Wasper app paths', t => {
   assert.equal(layout.wasperApp, fs.realpathSync.native(actualApp));
 });
 
-test('resolveLayout keeps a relative output path under the owned cache', t => {
+test('resolveLayout accepts only the marker-owned runs output directory', t => {
   const homeDirectory = temporaryHome(t);
   const cacheRoot = path.join(
     homeDirectory,
@@ -74,10 +74,23 @@ test('resolveLayout keeps a relative output path under the owned cache', t => {
   const layout = resolveLayout({
     cacheDir: cacheRoot,
     homeDirectory,
-    outputDir: 'runs/comparison-a',
+    outputDir: 'runs',
   });
 
-  assert.equal(layout.outputRoot, path.join(cacheRoot, 'runs/comparison-a'));
+  assert.equal(layout.outputRoot, path.join(cacheRoot, 'runs'));
+});
+
+test('resolveLayout rejects a custom output directory that clean would not own', t => {
+  const homeDirectory = temporaryHome(t);
+  const cacheRoot = path.join(
+    homeDirectory,
+    'Library/Caches/Wasper/benchmarks/parakeet-runtime-v1'
+  );
+
+  assert.throws(
+    () => resolveLayout({ cacheDir: cacheRoot, homeDirectory, outputDir: 'runs/comparison-a' }),
+    /marker-owned runs/
+  );
 });
 
 test('resolveLayout rejects a cache root outside the benchmark namespace', t => {
@@ -105,7 +118,7 @@ test('resolveLayout rejects output outside the selected cache', t => {
         homeDirectory,
         outputDir: externalOutput,
       }),
-    /output.*benchmark cache/
+    /marker-owned runs/
   );
 });
 

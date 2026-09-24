@@ -105,14 +105,17 @@ function resolveLayout(options = {}) {
     throw new Error('benchmark cache must not be a Git repository or worktree');
   }
 
-  const rawOutputRoot = options.outputDir ?? path.join(cacheRoot, 'runs');
-  const outputRoot = canonicalizePath(
-    rawOutputRoot,
-    'benchmark output',
-    path.isAbsolute(rawOutputRoot) ? process.cwd() : cacheRoot
-  );
-  if (!isInside(cacheRoot, outputRoot)) {
-    throw new Error('output must stay under the benchmark cache');
+  const outputRoot = canonicalizePath(path.join(cacheRoot, 'runs'), 'benchmark output');
+  if (options.outputDir !== undefined) {
+    const rawOutputRoot = options.outputDir;
+    const requestedOutputRoot = canonicalizePath(
+      rawOutputRoot,
+      'benchmark output',
+      path.isAbsolute(rawOutputRoot) ? process.cwd() : cacheRoot
+    );
+    if (requestedOutputRoot !== outputRoot) {
+      throw new Error('benchmark output must be the marker-owned runs directory');
+    }
   }
 
   const wasperApp =

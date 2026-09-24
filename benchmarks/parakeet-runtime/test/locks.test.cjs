@@ -132,6 +132,22 @@ test('rejects malformed URLs, short revisions and invalid hashes even when autho
   }
 });
 
+test('requires each artifact redirect host to be a checked-in public family member', () => {
+  const cases = [
+    lock => {
+      lock.runtimes[0].artifactRedirectHosts['huggingface.co'].push('127.0.0.1');
+    },
+    lock => {
+      delete lock.runtimes[0].artifactRedirectHosts['huggingface.co'];
+    },
+  ];
+  for (const mutate of cases) {
+    const lock = structuredClone(loadRuntimeLock());
+    mutate(lock);
+    assert.throws(() => validateRuntimeLock(lock, lock), /artifact redirect host/i);
+  }
+});
+
 test('adapters derive public artifact and holder paths and selected Python from the lock', () => {
   const layout = resolveLayout();
   const lock = loadRuntimeLock();

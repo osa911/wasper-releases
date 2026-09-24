@@ -7,7 +7,9 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { resolveLayout, writeOwnershipMarker } = require('../src/config.cjs');
+const { runCli } = require('../src/cli.cjs');
 const { RUNTIME_DESCRIPTORS } = require('../src/runtime/constants.cjs');
+const { loadRuntimeLock } = require('../src/runtime/locks.cjs');
 const { runRuntimeBenchmark } = require('../src/runtime/runner.cjs');
 
 function temporaryLayout(t) {
@@ -242,4 +244,79 @@ test('runner rotates a supplied valid runtime order after its first pass', async
       ],
     ],
   );
+});
+
+test('ready-short uses only ready runtime IDs and the automatic short cohort', async t => {
+  const layout = temporaryLayout(t);
+  const runtimeLock = loadRuntimeLock();
+  const expectedRuntimeIds = runtimeLock.runtimes
+    .filter(runtime => runtime.reproduction.state === 'ready')
+    .map(runtime => runtime.id);
+  const bootstrapped = [];
+  let recovered;
+  let smoke;
+  let benchmark;
+  const writes = [];
+
+  const result = await runCli(['benchmark', 'ready-short'], {
+    homeDirectory: layout.homeDirectory,
+    stdout: { write(value) { writes.push(value); } },
+    loadRuntimeLockImpl: () => runtimeLock,
+    async bootstrapRuntimeImpl(runtimeId) {
+      bootstrapped.push(runtimeId);
+    },
+    async recoverCorpusImpl(options) {
+      recovered = options;
+      return {
+        manifest: {
+          schema: 'wasper.public-run-corpus.v1',
+          cohort: 'short',
+          fixtures: [{ fixtureId: 'en-short-synthetic', cohort: 'short' }],
+        },
+      };
+    },
+    async smokeRuntimeAdaptersImpl(options) {
+      smoke = options;
+      return { cells: [] };
+    },
+    async runRuntimeBenchmarkImpl(options) {
+      benchmark = options;
+      return { runId: 'ready-short-run', runDirectory: path.join(layout.outputRoot, 'ready-short-run') };
+    },
+  });
+
+  assert.deepEqual(bootstrapped, expectedRuntimeIds);
+  assert.equal(recovered.cohort, 'short');
+  assert.equal(recovered.acceptSourceTerms, false);
+  assert.deepEqual(smoke.runtimeDescriptors.map(runtime => runtime.id), expectedRuntimeIds);
+  assert.deepEqual(benchmark.runtimeDescriptors.map(runtime => runtime.id), expectedRuntimeIds);
+  assert.equal(benchmark.runIdentity.mode, 'ready-short');
+  assert.equal(benchmark.runIdentity.verification, 'partial-non-comparable');
+  assert.equal(result.mode, 'ready-short');
+  assert.equal(result.verification, 'partial-non-comparable');
+  assert.match(writes.join(''), /ready-short.*partial-non-comparable/);
+});
+
+test('full mode still reaches blocked runtime state before corpus recovery', async t => {
+  const layout = temporaryLayout(t);
+  const bootstrapped = [];
+  let recovered = false;
+
+  await assert.rejects(
+    runCli(['benchmark', 'full'], {
+      homeDirectory: layout.homeDirectory,
+      loadRuntimeLockImpl: loadRuntimeLock,
+      async bootstrapRuntimeImpl(runtimeId) {
+        bootstrapped.push(runtimeId);
+        if (runtimeId === 'mlx-int8-local') throw new Error('blocked runtime');
+      },
+      async recoverCorpusImpl() {
+        recovered = true;
+      },
+    }),
+    /blocked runtime/
+  );
+
+  assert.deepEqual(bootstrapped, ['wasper-metal-int8', 'mlx-fp32', 'mlx-int8-local']);
+  assert.equal(recovered, false);
 });

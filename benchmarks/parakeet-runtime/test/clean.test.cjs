@@ -318,21 +318,21 @@ test('clean ignores a PATH-shadowed Python executable', async t => {
   assert.equal(fs.existsSync(layout.artifactsRoot), false);
 });
 
-test('clean preserves an unrelated explicit output root inside the marker-owned cache', async t => {
+test('a custom output root is rejected before clean can adopt its data', t => {
   const { homeDirectory, layout: defaultLayout } = ownedLayout(t);
   const outputRoot = path.join(defaultLayout.cacheRoot, 'comparisons', 'candidate-a');
   fs.mkdirSync(outputRoot, { recursive: true });
   fs.writeFileSync(path.join(outputRoot, 'result.json'), '{}');
-  const layout = resolveLayout({
-    cacheDir: defaultLayout.cacheRoot,
-    homeDirectory,
-    outputDir: 'comparisons/candidate-a',
-  });
-  writeOwnershipMarker(layout);
 
-  const removed = await clean(layout);
-
-  assert.equal(removed.includes(outputRoot), false);
+  assert.throws(
+    () =>
+      resolveLayout({
+        cacheDir: defaultLayout.cacheRoot,
+        homeDirectory,
+        outputDir: 'comparisons/candidate-a',
+      }),
+    /marker-owned runs/
+  );
   assert.equal(fs.readFileSync(path.join(outputRoot, 'result.json'), 'utf8'), '{}');
 });
 

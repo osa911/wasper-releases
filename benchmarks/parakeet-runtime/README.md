@@ -19,6 +19,12 @@ No frozen 2026-09 result is published in this commit. See the
 [historical evidence status](results/2026-09-m1-pro/README.md) for why this
 commit contains no historical numeric projection.
 
+`ready-short` is a separate runnable verification mode. It uses only the five
+runtime locks with `reproduction.state=ready` and the 243 automatically
+recoverable short fixtures. Its run identity and CLI output label it as a
+partial, non-comparable verification run. It is not the historical
+seven-runtime result and must not be used to recreate or rank against it.
+
 ## Requirements
 
 Use macOS on an Apple Silicon Mac. Install Node.js 22 or later, Xcode Command
@@ -34,6 +40,7 @@ brew install node@22
 brew install python@3.12
 brew install cmake
 npm ci
+python3 -m pip install parakeet-mlx==0.5.2 mlx==0.32.2 onnx-asr==0.12.0 onnxruntime==1.30.0
 npm run doctor
 ```
 
@@ -42,7 +49,10 @@ download a model, or fetch a corpus. It prints the hardware, Darwin platform
 and kernel release, Node version, available disk, cache and output locations,
 Wasper classification, and a state for every runtime. It exits nonzero when a
 prerequisite invalidates a full run; that is expected at this commit because of
-the locked runtime and long-source blockers.
+the locked runtime and long-source blockers. Doctor checks the exact `python3`
+used by bootstrap, every package pin required by a ready runtime, and `swift`
+because the checked-in lock includes a Swift runtime. It prints a command for
+each missing prerequisite and never runs that command itself.
 
 The doctor requires at least 24 GiB of free disk. This is a preflight floor,
 not an exact cache size. No measured full-run elapsed time or cache size is
@@ -50,7 +60,8 @@ available while the full cohort is blocked.
 
 If doctor reports a missing requirement, use the command it prints. The manual
 remediations documented here are `xcode-select --install`, `brew install
-node@22`, `brew install python@3.12`, `brew install cmake`, and `npm run clean`.
+node@22`, `brew install python@3.12`, `brew install cmake`, `python3 -m pip
+install <package>==<version>`, and `npm run clean`.
 If doctor reports that Wasper.app is missing, complete these steps:
 
 1. Download the current macOS archive from [Wasper releases](https://github.com/osa911/wasper-releases/releases).
@@ -76,6 +87,17 @@ data can add more storage.
 
 ## Run the benchmark when prerequisites are available
 
+Use the runnable public verification subset with:
+
+```sh
+npm run benchmark -- ready-short
+```
+
+This mode fetches only the five ready runtime locks and recovers only the
+automatic short cohort. Its output is labelled `partial-non-comparable`. Do
+not treat its metrics as the historical full comparison, and do not infer
+anything about the blocked runtimes or manual long inputs from it.
+
 The eventual full-run command is:
 
 ```sh
@@ -94,9 +116,11 @@ By default, generated artifacts are kept only in the marker-owned cache:
 ~/Library/Caches/Wasper/benchmarks/parakeet-runtime-v1
 ```
 
-Run outputs are under its `runs` directory. `--cache-dir` and `--output-dir`
-must remain inside that cache. Treat raw local run output as non-public: do not
-commit it or publish it.
+Run outputs are always under its marker-owned `runs` directory. You can pass
+`--output-dir` only when it resolves exactly to that directory. The command
+rejects a custom output subdirectory so `npm run clean` has a fixed deletion
+scope. Treat raw local run output as non-public: do not commit it or publish
+it.
 
 To remove generated benchmark data, run:
 
@@ -131,7 +155,9 @@ partial coverage against complete coverage.
 
 The exact revisions, files, and SHA-256 values are in
 [`locks/runtimes.json`](locks/runtimes.json). Read every model card, runtime
-source, and package license before downloading or using an artifact.
+source, and package license before downloading or using an artifact. Artifact
+downloads follow only the checked-in HTTPS redirect hosts for their source
+family.
 
 | Runtime | Public sources | State at this commit |
 | --- | --- | --- |
