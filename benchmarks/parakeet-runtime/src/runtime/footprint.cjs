@@ -247,12 +247,19 @@ function validatePhysicalFootprintEvidence(evidence) {
   });
 }
 
+function projectPublicFootprint(evidence) {
+  const bytes = evidence?.physFootprintPeakBytes ?? evidence?.phys_footprint_peak;
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  return Object.freeze({ phys_footprint_peak: bytes });
+}
+
 module.exports = {
   FOOTPRINT_COMMAND,
   TOP_COMMAND,
   TOP_TIMEOUT_MS,
   parsePhysicalFootprint,
   parseTopPhysicalFootprint,
+  projectPublicFootprint,
   sampleOwnedProcessTree,
   samplePhysicalFootprint,
   validatePhysicalFootprintEvidence,

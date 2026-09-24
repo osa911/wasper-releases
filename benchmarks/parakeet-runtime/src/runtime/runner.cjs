@@ -6,10 +6,12 @@ const path = require('node:path');
 
 const { canonicalJson } = require('../asr-quality/manifest.cjs');
 const { assertCanonicalScore, scoreTranscript } = require('../asr-quality/scoring.cjs');
+const { isInside, resolveLayout } = require('../config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./constants.cjs');
 const { createEvidenceStore } = require('./evidence-store.cjs');
 const { aggregateRuntimeEvidence } = require('./aggregation.cjs');
-const { writeInternalReport } = require('./report.cjs');
+const { writePublicReport } = require('./report.cjs');
+const { projectPublicEvidence } = require('./reporting/public-projection.cjs');
 
 const DEFAULT_MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
 const FOOTPRINT_SAMPLE_ATTEMPTS = 2;
@@ -58,73 +60,99 @@ function resolveRuntimeOrder(runtimeOrder) {
   return resolved;
 }
 
-function fixtureAudioPath(fixture, outputRoot, longPlaybackById) {
-  if (typeof fixture.audioPath === 'string' && fixture.audioPath.length > 0)
-    return fixture.audioPath;
-  if (fixture.cohort === 'long') return longPlaybackById.get(fixture.id) ?? null;
-  const shortId = fixture.id.replace(/-warmup$/u, '');
-  return path.join(outputRoot, 'corpus', 'short', 'playback', `${shortId}.wav`);
+function resolveCorpusFile(layout, relativePath, label) {
+  if (
+    typeof relativePath !== 'string' ||
+    relativePath === '' ||
+    path.isAbsolute(relativePath) ||
+    relativePath.split(/[\\/]/u).some(part => part === '..' || part === '')
+  ) {
+    throw new TypeError(`${label} must be a safe corpus-relative path`);
+  }
+  const filePath = path.resolve(layout.corpusRoot, ...relativePath.split('/'));
+  if (!isInside(layout.corpusRoot, filePath)) {
+    throw new Error(`${label} must stay under the verified corpus root`);
+  }
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`${label} must be a verified regular file`);
+  }
+  return filePath;
 }
 
-function fixturesFrom(manifest, { outputRoot, preparedLongPath } = {}) {
-  const fixtures = manifest?.runCorpus?.fixtures;
-  if (!Array.isArray(fixtures) || fixtures.length === 0) {
-    throw new TypeError('manifest.runCorpus.fixtures must be a non-empty array');
+function hydratePublicFixtures(manifest, layout) {
+  if (manifest?.schema !== 'wasper.public-run-corpus.v1' || !Array.isArray(manifest.fixtures)) {
+    throw new TypeError('manifest must be a verified public run corpus');
   }
-  const longPlaybackById = new Map();
-  const needsPreparedLongPlayback = fixtures.some(
-    fixture =>
-      fixture.status !== 'no-qualified-fixture' &&
-      fixture.cohort === 'long' &&
-      (typeof fixture.audioPath !== 'string' || fixture.audioPath.length === 0)
-  );
-  if (needsPreparedLongPlayback && preparedLongPath !== undefined) {
-    const prepared = JSON.parse(fs.readFileSync(preparedLongPath, 'utf8'));
-    for (const item of prepared.items ?? []) {
-      longPlaybackById.set(
-        item.fixtureId,
-        path.join(path.dirname(preparedLongPath), ...item.playbackRelativePath.split('/'))
-      );
-    }
-  }
-  return fixtures.map(fixture => {
-    if (fixture.status === 'no-qualified-fixture') {
+  const fixtures = manifest.fixtures.map(fixture => {
+    if (fixture?.status === 'no-qualified-fixture') {
       return {
-        ...fixture,
         id: `no-qualified-long:${fixture.language}`,
+        language: fixture.language,
         cohort: 'long',
         unavailable: true,
+        reason: fixture.reason,
       };
     }
     if (
-      !['short', 'long', 'warmup'].includes(fixture.cohort) ||
-      typeof fixture.reference?.text !== 'string'
+      !['short', 'long'].includes(fixture?.cohort) ||
+      typeof fixture.fixtureId !== 'string' ||
+      typeof fixture.language !== 'string'
     ) {
-      throw new TypeError('scored runtime fixture must have cohort and reference text');
+      throw new TypeError('verified public fixture must identify its cohort, language, and fixture id');
     }
-    const audioPath = fixtureAudioPath(fixture, outputRoot, longPlaybackById);
-    if (
-      typeof audioPath !== 'string' ||
-      (fixture.audioPath === undefined && !fs.existsSync(audioPath))
-    ) {
-      throw new Error(`verified playback WAV is missing for ${fixture.id}`);
-    }
+    const audioPath = resolveCorpusFile(
+      layout,
+      fixture.normalizedAudio?.path,
+      `${fixture.fixtureId} normalized audio`
+    );
+    const referencePath = resolveCorpusFile(
+      layout,
+      fixture.reference?.path,
+      `${fixture.fixtureId} reference`
+    );
+    const text = fs.readFileSync(referencePath, 'utf8');
+    if (text === '') throw new Error(`${fixture.fixtureId} reference is empty`);
     return {
-      ...fixture,
+      id: fixture.fixtureId,
+      language: fixture.language,
+      cohort: fixture.cohort,
       audioPath,
+      normalizedAudio: {
+        durationSeconds: fixture.normalizedAudio?.durationSeconds,
+        sha256: fixture.normalizedAudio?.sha256,
+      },
+      reference: { sha256: fixture.reference?.sha256, text },
+      source: { sha256: fixture.source?.sha256 },
     };
   });
+  if (fixtures.length === 0) throw new TypeError('verified public corpus has no fixtures');
+  const warmupSource = fixtures
+    .filter(fixture => fixture.cohort === 'short' && !fixture.unavailable)
+    .sort((left, right) => left.id.localeCompare(right.id))[0];
+  if (!warmupSource) throw new Error('verified public corpus has no short fixture for warm-up');
+  return {
+    warmup: { ...warmupSource, id: `${warmupSource.id}-warmup`, cohort: 'warmup' },
+    fixtures,
+    requestBalancedFixtureIds: fixtures
+      .filter(fixture => fixture.cohort === 'short' && !fixture.unavailable)
+      .map(fixture => fixture.id),
+  };
 }
 
 function buildRuntimeSchedule({ manifest, seed }) {
-  const fixtures = fixturesFrom(manifest)
+  const fixtures = manifest?.runCorpus?.fixtures;
+  if (!Array.isArray(fixtures) || fixtures.length === 0) {
+    throw new TypeError('hydrated runtime corpus fixtures are required');
+  }
+  const rankedFixtures = fixtures
     .map(fixture => ({ fixture, rank: hash({ fixtureId: fixture.id, seed }) }))
     .sort((left, right) => left.rank.localeCompare(right.rank));
   const schedule = [];
   let order = 0;
   for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
     for (const cell of rotate(RUNTIME_DESCRIPTORS, pass - 1)) {
-      for (const { fixture } of rotate(fixtures, pass - 1)) {
+      for (const { fixture } of rotate(rankedFixtures, pass - 1)) {
         schedule.push({
           order: order++,
           cellId: cell.id,
@@ -147,6 +175,7 @@ function errorRecord(item, fixture, error) {
     wallSeconds: null,
     score: null,
     footprint: null,
+    fixtureEvidence: fixtureEvidence(fixture),
     raw: {
       error: {
         name: error?.name ?? 'Error',
@@ -165,6 +194,7 @@ function memoryExcludedRecord(item, fixture, error) {
     wallSeconds: null,
     score: null,
     footprint: error.footprint ?? null,
+    fixtureEvidence: fixtureEvidence(fixture),
     raw: {
       memoryExclusion: {
         code: error.code,
@@ -187,7 +217,17 @@ function unavailableRecord(item, fixture) {
     wallSeconds: null,
     score: null,
     footprint: null,
+    fixtureEvidence: fixtureEvidence(fixture),
     raw: { unavailableReason: fixture.reason },
+  };
+}
+
+function fixtureEvidence(fixture) {
+  return {
+    sourceSha256: fixture.source?.sha256 ?? null,
+    normalizedWavSha256: fixture.normalizedAudio?.sha256 ?? null,
+    referenceSha256: fixture.reference?.sha256 ?? null,
+    durationSeconds: fixture.normalizedAudio?.durationSeconds ?? null,
   };
 }
 
@@ -289,13 +329,13 @@ async function sampleFootprintAfterTiming(adapter) {
   throw lastError;
 }
 
-async function transcribeThenSamplePhysicalFootprint({ adapter, fixture, capBytes }) {
+async function transcribeThenSamplePhysicalFootprint({ adapter, fixture, capBytes, requestOptions }) {
   let lastFootprint = null;
   try {
     // `sampleFootprint()` invokes macOS `top`, which perturbs short-request
     // timing. The timing response must resolve before this unscored memory
     // observation begins.
-    const response = await adapter.transcribe(fixture);
+    const response = await adapter.transcribe(fixture, requestOptions);
     lastFootprint = await sampleFootprintAfterTiming(adapter);
     assertPhysicalFootprintCap(lastFootprint, capBytes);
     return { response, footprint: lastFootprint };
@@ -307,7 +347,7 @@ async function transcribeThenSamplePhysicalFootprint({ adapter, fixture, capByte
 }
 
 async function runRuntimeBenchmark({
-  outputRoot,
+  layout,
   manifest,
   runIdentity,
   adapterFactory,
@@ -315,7 +355,7 @@ async function runRuntimeBenchmark({
   maxPhysicalFootprintBytes = DEFAULT_MAX_PHYSICAL_FOOTPRINT_BYTES,
   priorMemoryExclusions,
   runtimeOrder,
-  preparedLongPath = '/Volumes/shared_NAS_Folder/1_code/wasper/open_slr/prepared/asr-quality-internal-v3-final/long-prepared.json',
+  now,
 }) {
   if (typeof adapterFactory !== 'function')
     throw new TypeError('adapterFactory must be a function');
@@ -325,15 +365,23 @@ async function runRuntimeBenchmark({
   if (!Number.isFinite(maxPhysicalFootprintBytes) || maxPhysicalFootprintBytes <= 0) {
     throw new TypeError('maxPhysicalFootprintBytes must be a positive finite number');
   }
+  const resolvedLayout = resolveLayout({
+    cacheDir: layout?.cacheRoot,
+    outputDir: layout?.outputRoot,
+    ...(layout?.homeDirectory === undefined ? {} : { homeDirectory: layout.homeDirectory }),
+    ...(layout?.wasperApp == null ? {} : { wasperApp: layout.wasperApp }),
+  });
+  if (
+    resolvedLayout.cacheRoot !== layout?.cacheRoot ||
+    resolvedLayout.outputRoot !== layout?.outputRoot
+  ) {
+    throw new Error('runtime benchmark layout changed or is forged');
+  }
+  const hydrated = hydratePublicFixtures(manifest, resolvedLayout);
   const hydratedManifest = {
-    ...manifest,
     runCorpus: {
-      ...manifest.runCorpus,
-      warmup: fixturesFrom(
-        { runCorpus: { fixtures: [manifest.runCorpus.warmup] } },
-        { outputRoot, preparedLongPath }
-      )[0],
-      fixtures: fixturesFrom(manifest, { outputRoot, preparedLongPath }),
+      warmup: hydrated.warmup,
+      fixtures: hydrated.fixtures,
     },
   };
   const schedule = buildRuntimeSchedule({ manifest: hydratedManifest, seed });
@@ -341,7 +389,12 @@ async function runRuntimeBenchmark({
   const fixtures = new Map(
     hydratedManifest.runCorpus.fixtures.map(fixture => [fixture.id, fixture])
   );
-  const store = createEvidenceStore({ outputRoot, runIdentity, resume });
+  const store = createEvidenceStore({
+    layout: resolvedLayout,
+    runIdentity,
+    resume,
+    ...(now === undefined ? {} : { clock: now }),
+  });
   const persisted = store.readRequests();
   const byOrder = new Map(persisted.map(record => [record.order, record]));
   let activationSequence = 0;
@@ -380,7 +433,9 @@ async function runRuntimeBenchmark({
           await adapter.sampleFootprint(),
           maxPhysicalFootprintBytes
         );
-        activation.warmup = await adapter.warmup(hydratedManifest.runCorpus.warmup);
+        activation.warmup = await adapter.warmup(hydratedManifest.runCorpus.warmup, {
+          languagePolicy: { mode: 'automatic', languageHint: null },
+        });
         activation.afterWarmupFootprint = assertPhysicalFootprintCap(
           await adapter.sampleFootprint(),
           maxPhysicalFootprintBytes
@@ -395,6 +450,7 @@ async function runRuntimeBenchmark({
               adapter,
               fixture,
               capBytes: maxPhysicalFootprintBytes,
+              requestOptions: { languagePolicy: { mode: 'automatic', languageHint: null } },
             });
             const score = scoreTranscript(
               fixture.reference.text,
@@ -414,6 +470,7 @@ async function runRuntimeBenchmark({
               wallSeconds: response.wallSeconds,
               score,
               footprint,
+              fixtureEvidence: fixtureEvidence(fixture),
               raw: { response },
             };
             store.writeRequest(record);
@@ -493,17 +550,28 @@ async function runRuntimeBenchmark({
   const aggregate = aggregateRuntimeEvidence({
     records,
     schedule,
-    requestBalancedFixtureIds: manifest.profiles?.requestBalancedSpeed?.fixtureIds ?? [],
+    requestBalancedFixtureIds: hydrated.requestBalancedFixtureIds,
   });
   const summary = { runId: store.runId, evidenceHash: store.evidenceHash(records), aggregate };
-  store.writeArtifact('internal-summary.json', summary);
-  store.writeArtifact('internal-review-queue.json', {
+  store.writeArtifact('local-summary.json', summary);
+  store.writeArtifact('local-review-queue.json', {
     errors: records
       .filter(record => record.outcome === 'error')
       .map(record => ({ order: record.order, raw: record.raw })),
   });
-  writeInternalReport({ store, runIdentity, aggregate });
-  return { runId: store.runId, runDirectory: store.runDirectory, schedule, records, aggregate };
+  const activations = store.readActivations();
+  const localRun = {
+    runId: store.runId,
+    runIdentity,
+    schedule,
+    records,
+    activations,
+    aggregate,
+  };
+  const publicEvidence = projectPublicEvidence(localRun);
+  store.writeArtifact('public-evidence.json', publicEvidence);
+  writePublicReport({ store, evidence: publicEvidence });
+  return { ...localRun, runDirectory: store.runDirectory, publicEvidence };
 }
 
 module.exports = {

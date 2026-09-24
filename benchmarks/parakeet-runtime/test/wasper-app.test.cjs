@@ -273,8 +273,8 @@ test('routes --wasper-app from the smoke command into the resolved layout', asyn
   await runCli(
     [
       'smoke',
-      '--output',
-      '.wasper-benchmark-cache/parakeet-runtime-v1/task-3-smoke',
+      '--output-dir',
+      'runs/task-3-smoke',
       '--wasper-app',
       app.appPath,
     ],
@@ -282,6 +282,9 @@ test('routes --wasper-app from the smoke command into the resolved layout', asyn
       homeDirectory,
       repositoryRoot: path.resolve(__dirname, '..'),
       stdout: { write() {} },
+      async recoverCorpusImpl() {
+        return { manifest: { schema: 'wasper.public-run-corpus.v1', fixtures: [] } };
+      },
       async smokeRuntimeAdaptersImpl({ layout }) {
         receivedLayout = layout;
         return { evidencePath: 'smoke.json', cells: [] };

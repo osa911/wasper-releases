@@ -3,8 +3,10 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { isDeepStrictEqual } = require('node:util');
 
 const { canonicalJson } = require('../asr-quality/manifest.cjs');
+const { OWNER_FILE, expectedOwnershipMarker, resolveLayout } = require('../config.cjs');
 
 function cloneJson(value, label = 'value') {
   try {
@@ -27,13 +29,47 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
-function createEvidenceStore({ outputRoot, runIdentity, resume = false }) {
-  if (typeof outputRoot !== 'string' || outputRoot.trim() === '') {
-    throw new TypeError('outputRoot must be a non-empty string');
+function resolveOwnedLayout(layout) {
+  if (layout === null || typeof layout !== 'object' || Array.isArray(layout)) {
+    throw new TypeError('layout is required for local benchmark evidence');
   }
+  const resolved = resolveLayout({
+    cacheDir: layout.cacheRoot,
+    outputDir: layout.outputRoot,
+    ...(layout.homeDirectory === undefined ? {} : { homeDirectory: layout.homeDirectory }),
+    ...(layout.wasperApp == null ? {} : { wasperApp: layout.wasperApp }),
+  });
+  if (resolved.cacheRoot !== layout.cacheRoot || resolved.outputRoot !== layout.outputRoot) {
+    throw new Error('benchmark evidence layout changed or is forged');
+  }
+  const markerPath = path.join(resolved.cacheRoot, OWNER_FILE);
+  let marker;
+  try {
+    const stat = fs.lstatSync(markerPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('not a regular file');
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`benchmark ownership marker is invalid: ${markerPath}`, { cause: error });
+  }
+  if (!isDeepStrictEqual(marker, expectedOwnershipMarker(resolved.cacheRoot))) {
+    throw new Error(`benchmark ownership marker does not match this cache: ${markerPath}`);
+  }
+  return resolved;
+}
+
+function timestampId(now) {
+  if (!(now instanceof Date) || Number.isNaN(now.valueOf())) {
+    throw new TypeError('evidence clock must return a valid Date');
+  }
+  return now.toISOString().replace(/[-:.]/gu, '').replace('Z', 'Z');
+}
+
+function createEvidenceStore({ layout, runIdentity, resume = false, clock = () => new Date() }) {
+  const ownedLayout = resolveOwnedLayout(layout);
+  if (typeof clock !== 'function') throw new TypeError('evidence clock must be a function');
   const identity = cloneJson(runIdentity, 'runIdentity');
-  const runId = hash(identity);
-  const runDirectory = path.join(path.resolve(outputRoot), 'runs', runId);
+  const runId = `${timestampId(clock())}-${hash(identity).slice(0, 12)}`;
+  const runDirectory = path.join(ownedLayout.outputRoot, runId);
   const runPath = path.join(runDirectory, 'run.json');
   const requestsDirectory = path.join(runDirectory, 'requests');
   const activationsDirectory = path.join(runDirectory, 'activations');
@@ -47,11 +83,10 @@ function createEvidenceStore({ outputRoot, runIdentity, resume = false }) {
     if (!resume) throw new Error(`run ${runId} already exists; use resume to continue it`);
   } else {
     if (resume) {
-      const runsDirectory = path.join(path.resolve(outputRoot), 'runs');
-      const existingRuns = fs.existsSync(runsDirectory)
+      const existingRuns = fs.existsSync(ownedLayout.outputRoot)
         ? fs
-            .readdirSync(runsDirectory)
-            .map(name => path.join(runsDirectory, name, 'run.json'))
+            .readdirSync(ownedLayout.outputRoot)
+            .map(name => path.join(ownedLayout.outputRoot, name, 'run.json'))
             .filter(filePath => fs.existsSync(filePath))
         : [];
       if (existingRuns.length === 1) {
@@ -101,6 +136,14 @@ function createEvidenceStore({ outputRoot, runIdentity, resume = false }) {
         .filter(name => name.endsWith('.json'))
         .sort()
         .map(name => readJson(path.join(requestsDirectory, name)));
+    },
+    readActivations() {
+      if (!fs.existsSync(activationsDirectory)) return [];
+      return fs
+        .readdirSync(activationsDirectory)
+        .filter(name => name.endsWith('.json'))
+        .sort()
+        .map(name => readJson(path.join(activationsDirectory, name)));
     },
     writeArtifact(name, value) {
       if (!/^[a-z0-9][a-z0-9-]*\.json$/u.test(name)) {

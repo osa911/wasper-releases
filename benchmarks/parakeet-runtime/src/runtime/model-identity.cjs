@@ -229,10 +229,40 @@ function validatePrivateModelIdentityEvidence(evidence) {
   return deepFreeze(structuredClone(evidence));
 }
 
+function projectPublicModelIdentity(value) {
+  const evidence = value?.identity && value?.identityHash ? value : { identity: value };
+  const identity = evidence.identity;
+  requirePlainObject(identity, 'model identity');
+  const projected = {
+    schema: identity.schema,
+    artifacts: (identity.artifacts ?? []).map(artifact => ({
+      bytes: artifact.bytes,
+      sha256: artifact.sha256,
+    })),
+    executable: { version: identity.executable?.version },
+    packages: (identity.packages ?? []).map(packageIdentity => ({
+      name: packageIdentity.name,
+      version: packageIdentity.version,
+    })),
+  };
+  if (identity.release !== undefined) {
+    projected.release = {
+      version: identity.release.version,
+      nativeServerSha256: identity.release.nativeServerSha256,
+      baselineKind: identity.release.baselineKind,
+    };
+  }
+  return deepFreeze({
+    ...(typeof evidence.identityHash === 'string' ? { identityHash: evidence.identityHash } : {}),
+    identity: projected,
+  });
+}
+
 module.exports = {
   MODEL_IDENTITY_SCHEMA,
   PRIVATE_MODEL_IDENTITY_EVIDENCE_SCHEMA,
   collectModelIdentity,
   createPrivateModelIdentityEvidence,
+  projectPublicModelIdentity,
   validatePrivateModelIdentityEvidence,
 };

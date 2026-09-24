@@ -1,45 +1,34 @@
 #!/usr/bin/env node
 'use strict';
 
-const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
-const path = require('node:path');
 
-const {
-  resolvePrivateOutputPath,
-  validateRuntimeBenchmarkContract,
-} = require('./runtime/contract.cjs');
-const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./runtime/constants.cjs');
+const { canonicalJson } = require('./asr-quality/manifest.cjs');
 const { resolveLayout } = require('./config.cjs');
+const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./runtime/constants.cjs');
 
-const COMMANDS = new Set([
-  'validate-contract',
-  'recover-corpus',
-  'smoke',
-  'run',
-  'report',
-  'clean',
-]);
-const OUTPUT_COMMANDS = new Set(['smoke', 'run', 'report']);
-const WASPER_APP_COMMANDS = new Set(['smoke', 'run']);
+const COMMANDS = new Set(['benchmark', 'recover-corpus', 'smoke', 'clean']);
 const LAYOUT_OPTIONS = new Map([
   ['--cache-dir', 'cacheDir'],
   ['--output-dir', 'outputDir'],
   ['--wasper-app', 'wasperApp'],
 ]);
 const MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
-const HOLDER_RUN_SCHEMA = 'wasper.parakeet-runtime-benchmark.holder-refresh.v2';
-const HOLDER_RUN_ATTEMPT = 'holder-v3-refresh-2026-09-13-r2-timing-isolated';
+const PUBLIC_RUN_SCHEMA = 'wasper.parakeet-runtime-benchmark.public-run.v1';
+
+function digest(value) {
+  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
 
 function parseCommandArguments(argv) {
   if (!Array.isArray(argv) || argv.length === 0) {
     throw new TypeError('a runtime benchmark command is required');
   }
   const [command, ...argumentsList] = argv;
-  if (!COMMANDS.has(command))
-    throw new TypeError(`unknown runtime benchmark command: ${command}`);
+  if (!COMMANDS.has(command)) throw new TypeError(`unknown runtime benchmark command: ${command}`);
   const options = {
-    output: null,
+    mode: null,
     cacheDir: null,
     outputDir: null,
     wasperApp: null,
@@ -48,20 +37,25 @@ function parseCommandArguments(argv) {
   };
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
-    if (
-      argument === '--accept-source-terms' &&
-      command === 'recover-corpus' &&
-      !options.acceptSourceTerms
-    ) {
+    if (argument === '--accept-source-terms' && !options.acceptSourceTerms) {
+      if (command === 'clean') throw new TypeError('clean does not accept --accept-source-terms');
       options.acceptSourceTerms = true;
       continue;
     }
-    const option =
-      argument === '--cohort' && command === 'recover-corpus'
-        ? 'cohort'
-        : argument === '--output'
-          ? 'output'
-          : LAYOUT_OPTIONS.get(argument);
+    if (command === 'benchmark' && options.mode === null && !argument.startsWith('--')) {
+      options.mode = argument;
+      continue;
+    }
+    if (command === 'recover-corpus' && argument === '--cohort' && options.cohort === null) {
+      const value = argumentsList[index + 1];
+      if (typeof value !== 'string' || value === '' || value.startsWith('--')) {
+        throw new TypeError('--cohort requires a value');
+      }
+      options.cohort = value;
+      index += 1;
+      continue;
+    }
+    const option = LAYOUT_OPTIONS.get(argument);
     if (!option || options[option] !== null) {
       throw new TypeError(`invalid arguments for runtime benchmark command ${command}`);
     }
@@ -72,88 +66,38 @@ function parseCommandArguments(argv) {
     options[option] = value;
     index += 1;
   }
-  if (OUTPUT_COMMANDS.has(command) && options.output === null) {
-    throw new TypeError(
-      `${command} requires an explicit --output under the private benchmark cache`
-    );
+  if (command === 'benchmark' && options.mode !== 'full') {
+    throw new TypeError('benchmark requires the full mode');
   }
-  if (!OUTPUT_COMMANDS.has(command) && options.output !== null) {
-    throw new TypeError(`${command} does not accept --output`);
+  if (command !== 'benchmark' && options.mode !== null) {
+    throw new TypeError(`${command} does not accept a benchmark mode`);
   }
-  const hasStorageOption = options.cacheDir !== null || options.outputDir !== null;
-  const hasUnsupportedWasperApp =
-    options.wasperApp !== null && !WASPER_APP_COMMANDS.has(command);
-  if (
-    (command !== 'clean' && command !== 'recover-corpus' && hasStorageOption) ||
-    (command !== 'clean' && hasUnsupportedWasperApp)
-  ) {
-    throw new TypeError(`${command} does not accept benchmark layout options`);
-  }
-  if (options.cohort !== null && !['short', 'long', 'all'].includes(options.cohort))
+  if (command === 'recover-corpus' && !['short', 'long', 'all'].includes(options.cohort)) {
     throw new TypeError('--cohort must be short, long, or all');
+  }
   return { command, ...options };
 }
 
-function createCommandPlan(
-  argv,
-  { repositoryRoot = path.resolve(__dirname, '..'), homeDirectory } = {}
-) {
-  validateRuntimeBenchmarkContract();
-  const { command, output, cacheDir, outputDir, wasperApp, cohort, acceptSourceTerms } =
+function createCommandPlan(argv, { homeDirectory } = {}) {
+  const { command, cacheDir, outputDir, wasperApp, mode, cohort, acceptSourceTerms } =
     parseCommandArguments(argv);
-  if (command === 'clean' || command === 'recover-corpus') {
-    return Object.freeze({
-      command,
-      layout: resolveLayout({
-        ...(cacheDir === null ? {} : { cacheDir }),
-        ...(outputDir === null ? {} : { outputDir }),
-        ...(wasperApp === null ? {} : { wasperApp }),
-        ...(homeDirectory === undefined ? {} : { homeDirectory }),
-      }),
-      ...(command === 'recover-corpus' ? { cohort: cohort ?? 'all', acceptSourceTerms } : {}),
-      writes: false,
-    });
-  }
-  const layout = WASPER_APP_COMMANDS.has(command)
-    ? resolveLayout({
-        ...(wasperApp === null ? {} : { wasperApp }),
-        ...(homeDirectory === undefined ? {} : { homeDirectory }),
-      })
-    : null;
-  return Object.freeze({
-    command,
-    output: output === null ? null : resolvePrivateOutputPath(output, { repositoryRoot }),
-    ...(layout === null ? {} : { layout }),
-    writes: false,
+  const layout = resolveLayout({
+    ...(cacheDir === null ? {} : { cacheDir }),
+    ...(outputDir === null ? {} : { outputDir }),
+    ...(wasperApp === null ? {} : { wasperApp }),
+    ...(homeDirectory === undefined ? {} : { homeDirectory }),
   });
+  return Object.freeze({ command, layout, mode, cohort, acceptSourceTerms, writes: false });
 }
 
-function readRecoveredCorpus(output) {
-  const manifestPath = path.join(output, 'selections/recovered-corpus.json');
-  try {
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  } catch (error) {
-    throw new Error(`cannot read recovered holder corpus at ${manifestPath}`, {
-      cause: error,
-    });
-  }
-}
-
-function createHolderRunIdentity(manifest) {
-  const corpus = {
-    preparedLongManifestSha256: manifest?.preparedLongManifestSha256,
-    runCorpusSha256: manifest?.runCorpusSha256,
-    sourceProvenanceSha256: manifest?.sourceProvenanceSha256,
-  };
-  for (const [field, value] of Object.entries(corpus)) {
-    if (typeof value !== 'string' || !/^[a-f0-9]{64}$/u.test(value)) {
-      throw new TypeError(`recovered holder corpus ${field} must be a SHA-256 digest`);
-    }
+function createPublicRunIdentity(manifest, runtimeLock) {
+  if (manifest?.schema !== 'wasper.public-run-corpus.v1') {
+    throw new TypeError('a verified public corpus manifest is required');
   }
   return Object.freeze({
-    schema: HOLDER_RUN_SCHEMA,
-    attempt: HOLDER_RUN_ATTEMPT,
-    corpus,
+    schema: PUBLIC_RUN_SCHEMA,
+    runtimeLockSha256: digest(runtimeLock),
+    corpusSha256: digest(manifest),
     hardware: {
       arch: process.arch,
       machine: os.hostname(),
@@ -161,9 +105,10 @@ function createHolderRunIdentity(manifest) {
       release: os.release(),
     },
     measurement: {
-      endpoint: 'direct-full-audio-transcribe',
+      input: 'complete-recording',
+      languagePolicy: { mode: 'automatic', languageHint: null },
       timing: 'response-only',
-      languageDetection: 'skip',
+      warmup: 'discarded',
       memory: {
         action: 'exclude-and-stop',
         maximumBytes: MAX_PHYSICAL_FOOTPRINT_BYTES,
@@ -171,33 +116,71 @@ function createHolderRunIdentity(manifest) {
         samplePhase: 'after-timed-response',
       },
     },
-    runtimeCells: RUNTIME_DESCRIPTORS,
     schedule: {
       passes: MEASURED_PASSES,
-      seed: 'holder-v3-refresh-20260913-r2',
-      order: 'three rotated runtime passes with frozen fixture ranking',
+      seed: 'public-parakeet-runtime-v1',
+      order: 'three sequential rotated runtime passes',
     },
-    scoring: {
-      module: 'src/asr-quality/scoring.cjs',
-      scope: 'full references; pooled and per-language WER/CER',
-    },
+    scoring: { scope: 'full references', metrics: ['WER', 'CER'] },
+    runtimeCells: RUNTIME_DESCRIPTORS,
+  });
+}
+
+async function runBenchmark({
+  plan,
+  bootstrapRuntimeImpl,
+  createRuntimeAdapterImpl,
+  loadRuntimeLockImpl,
+  recoverCorpusImpl,
+  runRuntimeBenchmarkImpl,
+  smokeRuntimeAdaptersImpl,
+}) {
+  const loadRuntimeLock = loadRuntimeLockImpl ?? require('./runtime/locks.cjs').loadRuntimeLock;
+  const bootstrapRuntime =
+    bootstrapRuntimeImpl ?? require('./runtime/bootstrap.cjs').bootstrapRuntime;
+  const recoverCorpus =
+    recoverCorpusImpl ?? require('./runtime/corpus-recovery.cjs').recoverCorpus;
+  const smokeRuntimeAdapters =
+    smokeRuntimeAdaptersImpl ?? require('./runtime/smoke.cjs').smokeRuntimeAdapters;
+  const runRuntimeBenchmark =
+    runRuntimeBenchmarkImpl ?? require('./runtime/runner.cjs').runRuntimeBenchmark;
+  const createRuntimeAdapter =
+    createRuntimeAdapterImpl ?? require('./runtime/adapters/index.cjs').createRuntimeAdapter;
+  const runtimeLock = loadRuntimeLock();
+
+  for (const runtime of RUNTIME_DESCRIPTORS) {
+    await bootstrapRuntime(runtime.id, { layout: plan.layout, lock: runtimeLock });
+  }
+  const prepared = await recoverCorpus({
+    layout: plan.layout,
+    cohort: 'all',
+    acceptSourceTerms: plan.acceptSourceTerms,
+  });
+  await smokeRuntimeAdapters({ layout: plan.layout, manifest: prepared.manifest, runtimeLock });
+  return runRuntimeBenchmark({
+    layout: plan.layout,
+    manifest: prepared.manifest,
+    runIdentity: createPublicRunIdentity(prepared.manifest, runtimeLock),
+    maxPhysicalFootprintBytes: MAX_PHYSICAL_FOOTPRINT_BYTES,
+    adapterFactory: runtime => createRuntimeAdapter(runtime.id, { layout: plan.layout, runtimeLock }),
   });
 }
 
 async function runCli(
   argv,
   {
-    repositoryRoot,
     stdout = process.stdout,
-    recoverCorpusImpl,
-    smokeRuntimeAdaptersImpl,
-    runRuntimeBenchmarkImpl,
-    createRuntimeAdapterImpl,
+    bootstrapRuntimeImpl,
     cleanImpl,
+    createRuntimeAdapterImpl,
     homeDirectory,
+    loadRuntimeLockImpl,
+    recoverCorpusImpl,
+    runRuntimeBenchmarkImpl,
+    smokeRuntimeAdaptersImpl,
   } = {}
 ) {
-  const plan = createCommandPlan(argv, { repositoryRoot, homeDirectory });
+  const plan = createCommandPlan(argv, { homeDirectory });
   if (plan.command === 'clean') {
     const clean = cleanImpl ?? require('./clean.cjs').clean;
     const removed = await clean(plan.layout, {
@@ -216,7 +199,7 @@ async function runCli(
       acceptSourceTerms: plan.acceptSourceTerms,
     });
     const result = Object.freeze({
-      ...plan,
+      command: plan.command,
       writes: true,
       manifestPath: recovered.manifestPath,
     });
@@ -224,54 +207,49 @@ async function runCli(
     return result;
   }
   if (plan.command === 'smoke') {
+    const recoverCorpus =
+      recoverCorpusImpl ?? require('./runtime/corpus-recovery.cjs').recoverCorpus;
+    const loadRuntimeLock = loadRuntimeLockImpl ?? require('./runtime/locks.cjs').loadRuntimeLock;
     const smokeRuntimeAdapters =
       smokeRuntimeAdaptersImpl ?? require('./runtime/smoke.cjs').smokeRuntimeAdapters;
-    const smoke = await smokeRuntimeAdapters({
-      output: plan.output,
+    const prepared = await recoverCorpus({
       layout: plan.layout,
+      cohort: 'all',
+      acceptSourceTerms: plan.acceptSourceTerms,
     });
-    const result = Object.freeze({ ...plan, writes: true, ...smoke });
+    const smoke = await smokeRuntimeAdapters({
+      layout: plan.layout,
+      manifest: prepared.manifest,
+      runtimeLock: loadRuntimeLock(),
+    });
+    const result = Object.freeze({ command: plan.command, writes: true, ...smoke });
     stdout.write(`${JSON.stringify(result)}\n`);
     return result;
   }
-  if (plan.command === 'run') {
-    const manifest = readRecoveredCorpus(plan.output);
-    const runRuntimeBenchmark =
-      runRuntimeBenchmarkImpl ?? require('./runtime/runner.cjs').runRuntimeBenchmark;
-    const createRuntimeAdapter =
-      createRuntimeAdapterImpl ?? require('./runtime/adapters/index.cjs').createRuntimeAdapter;
-    const result = await runRuntimeBenchmark({
-      outputRoot: plan.output,
-      manifest,
-      runIdentity: createHolderRunIdentity(manifest),
-      adapterFactory: runtime =>
-        createRuntimeAdapter(runtime.id, { repositoryRoot, layout: plan.layout }),
-      preparedLongPath: path.join(plan.output, 'corpus/long/prepared/long-prepared.json'),
-    });
-    const summary = Object.freeze({
-      ...plan,
-      writes: true,
-      runId: result.runId,
-      runDirectory: result.runDirectory,
-    });
-    stdout.write(`${JSON.stringify(summary)}\n`);
-    return summary;
-  }
-  stdout.write(`${JSON.stringify(plan)}\n`);
-  return plan;
-}
-
-if (require.main === module) {
-  runCli(process.argv.slice(2)).catch(error => {
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = 1;
+  const result = await runBenchmark({
+    plan,
+    bootstrapRuntimeImpl,
+    createRuntimeAdapterImpl,
+    loadRuntimeLockImpl,
+    recoverCorpusImpl,
+    runRuntimeBenchmarkImpl,
+    smokeRuntimeAdaptersImpl,
   });
+  const summary = Object.freeze({
+    command: plan.command,
+    writes: true,
+    runId: result.runId,
+    runDirectory: result.runDirectory,
+  });
+  stdout.write(`${JSON.stringify(summary)}\n`);
+  return summary;
 }
 
 module.exports = {
   createCommandPlan,
-  createHolderRunIdentity,
+  createPublicRunIdentity,
   main: runCli,
   parseCommandArguments,
+  runBenchmark,
   runCli,
 };

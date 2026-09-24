@@ -1,17 +1,34 @@
 'use strict';
 
 const fs = require('node:fs');
-const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 
-const { resolveLayout } = require('../config.cjs');
+const { isInside, resolveLayout, writeOwnershipMarker } = require('../config.cjs');
 const { createRuntimeAdapter } = require('./adapters/index.cjs');
 const { RUNTIME_DESCRIPTORS } = require('./constants.cjs');
+const { createEvidenceStore } = require('./evidence-store.cjs');
 
-function smokeFixture(output) {
-  const audioPath = path.join(output, 'corpus/short/playback/de-short-041268eb385d980f.wav');
-  if (!fs.existsSync(audioPath)) throw new Error(`verified smoke fixture is missing: ${audioPath}`);
-  return { id: 'de-short-041268eb385d980f', audioPath };
+function smokeFixture(manifest, layout) {
+  const fixture = manifest?.fixtures?.find(item => item.cohort === 'short');
+  if (!fixture) throw new Error('verified public corpus has no short smoke fixture');
+  const relativePath = fixture.normalizedAudio?.path;
+  if (
+    typeof relativePath !== 'string' ||
+    relativePath === '' ||
+    path.isAbsolute(relativePath) ||
+    relativePath.split(/[\\/]/u).some(part => part === '..' || part === '')
+  ) {
+    throw new Error('verified smoke fixture audio path is unsafe');
+  }
+  const audioPath = path.resolve(layout.corpusRoot, ...relativePath.split('/'));
+  if (!isInside(layout.corpusRoot, audioPath)) {
+    throw new Error('verified smoke fixture must stay under the corpus root');
+  }
+  const stat = fs.lstatSync(audioPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`verified smoke fixture is missing: ${audioPath}`);
+  }
+  return { id: fixture.fixtureId, audioPath };
 }
 
 function outcomeError(outcome, phase) {
@@ -34,35 +51,45 @@ function serializeError(error, phase) {
   return serialized;
 }
 
-function createEvidence(output, fixture) {
-  const createdAt = new Date().toISOString();
-  const runId = `smoke-${createdAt.replace(/[^0-9A-Za-z]/gu, '')}-${randomUUID()}`;
-  const runDirectory = path.join(output, 'runs', 'smoke', runId);
-  fs.mkdirSync(path.dirname(runDirectory), { recursive: true });
-  fs.mkdirSync(runDirectory);
-  const evidencePath = path.join(runDirectory, 'smoke.json');
-  const evidence = {
-    schema: 'wasper.parakeet-runtime-benchmark.private-smoke.v1',
-    visibility: 'private-evidence',
-    runId,
-    status: 'running',
-    createdAt,
-    fixture,
-    cells: [],
-  };
-  const persist = () => fs.writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
-  persist();
-  return { evidence, evidencePath, persist };
-}
-
 async function smokeRuntimeAdapters({
-  output,
   layout = resolveLayout(),
+  manifest,
   runtimeLock,
   createRuntimeAdapterImpl = createRuntimeAdapter,
+  now,
 }) {
-  const fixture = smokeFixture(output);
-  const { evidence, evidencePath, persist } = createEvidence(output, fixture);
+  const resolvedLayout = resolveLayout({
+    cacheDir: layout.cacheRoot,
+    outputDir: layout.outputRoot,
+    ...(layout.homeDirectory === undefined ? {} : { homeDirectory: layout.homeDirectory }),
+    ...(layout.wasperApp == null ? {} : { wasperApp: layout.wasperApp }),
+  });
+  if (
+    resolvedLayout.cacheRoot !== layout.cacheRoot ||
+    resolvedLayout.outputRoot !== layout.outputRoot
+  ) {
+    throw new Error('smoke layout changed or is forged');
+  }
+  writeOwnershipMarker(resolvedLayout);
+  const fixture = smokeFixture(manifest, resolvedLayout);
+  const store = createEvidenceStore({
+    layout: resolvedLayout,
+    runIdentity: {
+      schema: 'wasper.parakeet-runtime-benchmark.local-smoke.v1',
+      schedule: { seed: 'smoke' },
+    },
+    ...(now === undefined ? {} : { clock: now }),
+  });
+  const evidencePath = path.join(store.runDirectory, 'smoke-evidence.json');
+  const evidence = {
+    schema: 'wasper.parakeet-runtime-benchmark.local-smoke.v1',
+    runId: store.runId,
+    status: 'running',
+    fixture: { id: fixture.id },
+    cells: [],
+  };
+  const persist = () => store.writeArtifact('smoke-evidence.json', evidence);
+  persist();
 
   for (const runtime of RUNTIME_DESCRIPTORS) {
     const cell = { runtimeId: runtime.id, status: 'running' };
@@ -74,7 +101,7 @@ async function smokeRuntimeAdapters({
     let failure = null;
     try {
       adapter = createRuntimeAdapterImpl(runtime.id, {
-        layout,
+        layout: resolvedLayout,
         ...(runtimeLock === undefined ? {} : { runtimeLock }),
       });
       phase = 'start';
@@ -85,17 +112,17 @@ async function smokeRuntimeAdapters({
       cell.health = await adapter.health();
       persist();
       phase = 'warmup';
-      cell.warmup = await adapter.warmup(fixture);
+      cell.warmup = await adapter.warmup(fixture, {
+        languagePolicy: { mode: 'automatic', languageHint: null },
+      });
       outcomeError(cell.warmup, phase);
       persist();
-      cell.transcriptions = [];
-      for (const index of [1, 2]) {
-        phase = `transcribe-${index}`;
-        const transcription = await adapter.transcribe(fixture);
-        cell.transcriptions.push(transcription);
-        outcomeError(transcription, phase);
-        persist();
-      }
+      phase = 'transcribe';
+      cell.transcription = await adapter.transcribe(fixture, {
+        languagePolicy: { mode: 'automatic', languageHint: null },
+      });
+      outcomeError(cell.transcription, phase);
+      persist();
       phase = 'footprint';
       cell.footprint = await adapter.sampleFootprint();
       persist();
@@ -123,7 +150,6 @@ async function smokeRuntimeAdapters({
     cell.status = failure ? 'failed' : 'ok';
     if (failure) {
       evidence.status = 'failed';
-      evidence.completedAt = new Date().toISOString();
       persist();
       failure.evidencePath = evidencePath;
       throw failure;
@@ -132,14 +158,10 @@ async function smokeRuntimeAdapters({
   }
 
   evidence.status = 'passed';
-  evidence.completedAt = new Date().toISOString();
   persist();
   return {
     evidencePath,
-    cells: evidence.cells.map(({ runtimeId, status }) => ({
-      runtimeId,
-      status,
-    })),
+    cells: evidence.cells.map(({ runtimeId, status }) => ({ runtimeId, status })),
   };
 }
 

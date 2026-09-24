@@ -23,7 +23,7 @@ function metric(records, key) {
   return counts.referenceUnits === 0 ? null : counts.errors / counts.referenceUnits;
 }
 
-function languageProjection(records, schedule) {
+function languageProjection(records, schedule, { omitMetrics = false } = {}) {
   const rows = {};
   for (const language of [...new Set(schedule.map(item => item.language))].sort()) {
     const expected = schedule.filter(item => item.language === language);
@@ -31,29 +31,39 @@ function languageProjection(records, schedule) {
     const successful = observed.filter(record => record.outcome === 'success');
     const unavailable = observed.filter(record => record.outcome === 'unavailable-long');
     const memoryExcluded = observed.filter(record => record.outcome === 'memory-excluded');
-    rows[language] = {
+    const row = {
       expectedRequests: expected.length,
       completedRequests: successful.length,
       failureCount: observed.filter(record => record.outcome === 'error').length,
       memoryExcludedRequests: memoryExcluded.length,
       ...(unavailable.length === 0 ? {} : { unavailableRequests: unavailable.length }),
-      wer: metric(successful, 'wer'),
-      cer: metric(successful, 'cer'),
     };
+    if (!omitMetrics) {
+      row.wer = metric(successful, 'wer');
+      row.cer = metric(successful, 'cer');
+    }
+    rows[language] = row;
   }
   return rows;
 }
 
-function workload(records, schedule) {
+function workload(records, schedule, { omitMetricsWhenIncomplete = false } = {}) {
   const successful = records.filter(record => record.outcome === 'success');
   const unavailable = records.filter(record => record.outcome === 'unavailable-long');
   const memoryExcluded = records.filter(record => record.outcome === 'memory-excluded');
-  return {
+  const result = {
     expectedRequests: schedule.length,
     completedRequests: successful.length,
     failureCount: records.filter(record => record.outcome === 'error').length,
     memoryExcludedRequests: memoryExcluded.length,
     unavailableRequests: unavailable.length,
+    languages: languageProjection(records, schedule, {
+      omitMetrics: omitMetricsWhenIncomplete && successful.length !== schedule.length,
+    }),
+  };
+  if (omitMetricsWhenIncomplete && successful.length !== schedule.length) return result;
+  return {
+    ...result,
     wer: metric(successful, 'wer'),
     cer: metric(successful, 'cer'),
     medianWallSeconds: median(successful.map(record => record.wallSeconds)),
@@ -62,7 +72,6 @@ function workload(records, schedule) {
         .filter(record => record.wallSeconds > 0)
         .map(record => record.audioSeconds / record.wallSeconds)
     ),
-    languages: languageProjection(records, schedule),
   };
 }
 
@@ -104,7 +113,9 @@ function aggregateRuntimeEvidence({ records, schedule, requestBalancedFixtureIds
       workloads: {
         shortQuality: workload(forSchedule(shortSchedule), shortSchedule),
         requestBalancedSpeed: workload(forSchedule(speedSchedule), speedSchedule),
-        longRobustness: workload(forSchedule(longSchedule), longSchedule),
+        longRobustness: workload(forSchedule(longSchedule), longSchedule, {
+          omitMetricsWhenIncomplete: true,
+        }),
       },
     };
   }

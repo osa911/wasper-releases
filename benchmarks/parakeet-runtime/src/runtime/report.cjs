@@ -1,91 +1,54 @@
 'use strict';
 
 function format(value) {
-  return value === null || value === undefined
-    ? '—'
-    : typeof value === 'number'
-      ? String(value)
-      : value;
+  return value === null || value === undefined ? '—' : String(value);
 }
 
-function workloadTable(aggregate, workloadName) {
-  const rows = Object.values(aggregate.cells)
-    .map(row => {
-      const workload = row.workloads[workloadName];
-      return `| ${row.runtime.label} | ${format(workload.wer)} | ${format(workload.cer)} | ${format(workload.medianWallSeconds)} | ${format(workload.realTimeSpeed)} | ${workload.completedRequests}/${workload.expectedRequests} | ${workload.unavailableRequests} | ${workload.memoryExcludedRequests} | ${workload.failureCount} |`;
+function workloadRows(evidence, workloadName) {
+  return Object.values(evidence.aggregate.cells)
+    .map(cell => {
+      const workload = cell.workloads[workloadName] ?? {};
+      return `| ${format(cell.runtime.label ?? cell.runtime.id)} | ${format(workload.wer)} | ${format(workload.cer)} | ${format(workload.medianWallSeconds)} | ${format(workload.realTimeSpeed)} | ${format(workload.completedRequests)}/${format(workload.expectedRequests)} | ${format(workload.unavailableRequests)} | ${format(workload.memoryExcludedRequests)} | ${format(workload.failureCount)} |`;
     })
     .join('\n');
-  return `| Runtime | WER | CER | Median measured time | Speed | Completed/expected | Unavailable | Memory excluded | Failures |
+}
+
+function workloadTable(evidence, name, title) {
+  return `## ${title}
+
+| Runtime | WER | CER | Median response seconds | Speed | Completed/expected | Unavailable | Memory excluded | Failures |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-${rows}`;
+${workloadRows(evidence, name)}`;
 }
 
-function languageTable(aggregate) {
-  const rows = Object.values(aggregate.cells)
-    .flatMap(row =>
-      Object.entries(row.workloads.shortQuality.languages).map(
-        ([language, value]) =>
-          `| ${row.runtime.label} | ${language} | ${format(value.wer)} | ${format(value.cer)} | ${value.completedRequests}/${value.expectedRequests} | ${value.unavailableRequests ?? 0} | ${value.memoryExcludedRequests ?? 0} | ${value.failureCount} |`
-      )
-    )
-    .join('\n');
-  return `| Runtime | Language | WER | CER | Completed/expected | Unavailable | Memory excluded | Failures |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-${rows || '| — | — | — | — | 0/0 | 0 | 0 | 0 |'}`;
-}
+function createPublicReport(evidence) {
+  const run = evidence.run ?? {};
+  return `# Parakeet runtime benchmark
 
-function writeInternalReport({ store, runIdentity, aggregate }) {
-  const summaryRows = Object.values(aggregate.cells)
-    .map(row => {
-      const quality = row.workloads.shortQuality;
-      const speed = row.workloads.requestBalancedSpeed;
-      const long = row.workloads.longRobustness;
-      const eligibility = row.memoryExcluded
-        ? `Excluded: exceeded ${format(row.memoryExclusion?.maxPhysicalFootprintBytes)} bytes`
-        : 'Eligible';
-      return `| ${row.runtime.label} | ${eligibility} | ${format(quality.wer)} | ${format(quality.cer)} | ${format(speed.medianWallSeconds)} (warm-up excluded) | ${format(speed.realTimeSpeed)} | ${format(row.phys_footprint_peak)} | ${row.completedRequests}/${quality.expectedRequests + long.expectedRequests} | ${row.failureCount} |`;
-    })
-    .join('\n');
-  const report = `# Parakeet runtime benchmark — internal review
+Run: \`${evidence.runId}\`
 
-Run identity: \`${store.runId}\`
+Runtime lock: \`${format(run.runtimeLockSha256)}\`
 
-Hardware: \`${JSON.stringify(runIdentity.hardware)}\`
+Corpus: \`${format(run.corpusSha256)}\`
 
-Model artifact hashes: \`${JSON.stringify(runIdentity.artifact)}\`
+Machine: \`${JSON.stringify(run.hardware ?? {})}\`
 
-## Aggregate runtime cells
+Wasper release: \`${JSON.stringify(run.wasperRelease ?? {})}\`
 
-| Runtime | Eligibility | WER | CER | Median/warm time | Speed | phys_footprint_peak | Completed/expected | Failures |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-${summaryRows}
+Warm-up establishes runtime residency and is discarded. Timed requests measure runtime response only. Long rows with incomplete coverage intentionally omit quality and speed metrics.
 
-## Workload: short quality
+${workloadTable(evidence, 'shortQuality', 'Short quality')}
 
-${workloadTable(aggregate, 'shortQuality')}
+${workloadTable(evidence, 'requestBalancedSpeed', 'Request-balanced speed')}
 
-## Workload: request-balanced speed
-
-${workloadTable(aggregate, 'requestBalancedSpeed')}
-
-## Workload: long robustness
-
-${workloadTable(aggregate, 'longRobustness')}
-
-## Per-language rows
-
-${languageTable(aggregate)}
-
-## Methodology
-
-Three measured passes use one fresh resident activation per runtime cell/pass. Warm-up establishes residency but is not part of measured wall time. Quality uses short fixtures; request-balanced speed uses the frozen short profile; long robustness retains unavailable long fixtures explicitly.
-
-## Quantization notes
-
-Local MLX int8 is weight-only 8-bit/group 64. Fluid is mixed precision.
+${workloadTable(evidence, 'longRobustness', 'Long robustness')}
 `;
-  store.writeText('internal-report.md', report);
+}
+
+function writePublicReport({ store, evidence }) {
+  const report = createPublicReport(evidence);
+  store.writeText('report.md', report);
   return report;
 }
 
-module.exports = { writeInternalReport };
+module.exports = { createPublicReport, writePublicReport };
