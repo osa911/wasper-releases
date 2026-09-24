@@ -259,6 +259,69 @@ test('clean cannot follow an interleaved quarantine replacement to external data
   );
 });
 
+test('clean cannot unlink through an interleaved quarantine-ancestor replacement', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const retainedFile = path.join(layout.cacheRoot, 'keep.txt');
+  fs.writeFileSync(retainedFile, 'keep');
+
+  const replacementTarget = path.join(homeDirectory, 'quarantine-entry-target');
+  fs.mkdirSync(replacementTarget);
+  const externalAncestor = path.join(homeDirectory, 'external-quarantine-ancestor');
+  const externalFile = path.join(externalAncestor, 'owned-cache');
+  fs.mkdirSync(externalAncestor);
+  fs.writeFileSync(externalFile, 'external');
+
+  const originalLstatSync = fs.lstatSync;
+  let quarantineContainer;
+  let ancestorReplaced = false;
+
+  fs.lstatSync = function interleaveQuarantineAncestor(filePath, options) {
+    const result = originalLstatSync(filePath, options);
+    if (
+      !ancestorReplaced &&
+      quarantineContainer !== undefined &&
+      filePath === path.join(quarantineContainer, 'owned-cache') &&
+      result.isSymbolicLink() &&
+      fs.existsSync(layout.cacheRoot)
+    ) {
+      ancestorReplaced = true;
+      fs.renameSync(quarantineContainer, `${quarantineContainer}-displaced`);
+      fs.symlinkSync(externalAncestor, quarantineContainer);
+    }
+    return result;
+  };
+
+  try {
+    await assert.rejects(
+      clean(layout, {
+        beforeRemove() {
+          if (quarantineContainer !== undefined) return;
+          const quarantineName = fs
+            .readdirSync(layout.cacheNamespaceRoot)
+            .find(name => name.startsWith('.parakeet-runtime-clean-'));
+          assert.notEqual(quarantineName, undefined);
+          quarantineContainer = path.join(layout.cacheNamespaceRoot, quarantineName);
+          const ownedCache = path.join(quarantineContainer, 'owned-cache');
+          fs.renameSync(ownedCache, path.join(quarantineContainer, 'displaced-owned-cache'));
+          fs.symlinkSync(replacementTarget, ownedCache);
+        },
+      })
+    );
+  } finally {
+    fs.lstatSync = originalLstatSync;
+  }
+
+  assert.equal(ancestorReplaced, true);
+  assert.equal(fs.readFileSync(externalFile, 'utf8'), 'external');
+  assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'keep');
+  assert.equal(
+    fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
+    true
+  );
+});
+
 test('clean reports each canonical generated root before deleting it', async t => {
   const { homeDirectory, layout } = ownedLayout(t);
   writeOwnershipMarker(layout);
