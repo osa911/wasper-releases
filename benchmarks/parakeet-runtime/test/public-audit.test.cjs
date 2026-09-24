@@ -51,32 +51,6 @@ function writeSource(directory, fileName, fragments) {
   fs.writeFileSync(path.join(directory, fileName), fragments.join(''));
 }
 
-function withoutSymlinkTargetIo(paths, operation) {
-  const blocked = new Set(paths.map(candidate => path.resolve(candidate)));
-  const methods = ['realpathSync', 'statSync', 'readFileSync', 'readdirSync'];
-  const originals = Object.fromEntries(methods.map(method => [method, fs[method]]));
-  for (const method of methods) {
-    const guardedFilesystemMethod = function guardedFilesystemMethod(...arguments_) {
-      const candidate = arguments_[0];
-      if (typeof candidate === 'string' && blocked.has(path.resolve(candidate))) {
-        throw new Error(`unsafe ${method} on symlink path or target: ${candidate}`);
-      }
-      return originals[method].apply(this, arguments_);
-    };
-    if (method === 'realpathSync') {
-      guardedFilesystemMethod.native = function guardedNativeRealpath(...arguments_) {
-        return guardedFilesystemMethod(...arguments_);
-      };
-    }
-    fs[method] = guardedFilesystemMethod;
-  }
-  try {
-    return operation();
-  } finally {
-    for (const method of methods) fs[method] = originals[method];
-  }
-}
-
 function symlinkFixture(t) {
   const fixturePackage = temporaryPackage(t);
   const values = privateFixtureValues();
@@ -107,15 +81,6 @@ function symlinkFixture(t) {
   return {
     fixturePackage,
     links,
-    targets: [
-      containedFileTarget,
-      containedDirectoryTarget,
-      outsideFileTarget,
-      outsideDirectoryTarget,
-      path.join(containedDirectoryTarget, 'private.txt'),
-      path.join(outsideDirectoryTarget, 'private.txt'),
-    ],
-    values,
   };
 }
 
@@ -275,40 +240,32 @@ test('decodes escaped JSON keys before checking private references', t => {
   ]);
 });
 
-test('rejects contained and escaping file and directory symlinks without target I/O', t => {
+test('redacts contained and escaping file and directory symlink targets', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixture = symlinkFixture(t);
-  const violations = withoutSymlinkTargetIo(
-    [...fixture.links.map(link => link.link), ...fixture.targets],
-    () => auditPublicPackage(fixture.fixturePackage)
-  );
   assert.deepEqual(
-    violations.filter(violation => violation.type === 'symlink-entry'),
+    auditPublicPackage(fixture.fixturePackage),
     fixture.links
       .map(link => ({
         file: link.file,
         type: 'symlink-entry',
-        value: fs.readlinkSync(link.link),
+        value: '[redacted symlink target]',
       }))
       .sort((left, right) => left.file.localeCompare(right.file))
   );
 });
 
-test('rejects a symlinked package root without reading its target', t => {
+test('redacts a symlinked package root target', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixturePackage = temporaryPackage(t);
   const rootLink = path.join(path.dirname(fixturePackage), 'package-link');
   fs.symlinkSync(fixturePackage, rootLink);
 
-  const violations = withoutSymlinkTargetIo([rootLink, fixturePackage], () =>
-    auditPublicPackage(rootLink)
-  );
-
-  assert.deepEqual(violations, [
+  assert.deepEqual(auditPublicPackage(rootLink), [
     {
       file: '.',
       type: 'symlink-entry',
-      value: fs.readlinkSync(rootLink),
+      value: '[redacted symlink target]',
     },
   ]);
 });
@@ -343,10 +300,7 @@ test('pins the root and rejects a queued directory that swaps to a symlink', t =
   };
   let violations;
   try {
-    violations = withoutSymlinkTargetIo(
-      [fixturePackage, queuedDirectory, outsideRoot, outsideDirectory],
-      () => auditPublicPackage(fixturePackage)
-    );
+    violations = auditPublicPackage(fixturePackage);
   } finally {
     fs.openSync = originalOpen;
     if (rootSwapped) {
@@ -361,7 +315,84 @@ test('pins the root and rejects a queued directory that swaps to a symlink', t =
     {
       file: 'queued',
       type: 'symlink-entry',
-      value: outsideDirectory,
+      value: '[redacted symlink target]',
+    },
+  ]);
+});
+
+test('isolates the descriptor helper from inherited Python startup files', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const startupDirectory = path.join(path.dirname(fixturePackage), 'python-startup');
+  const sentinel = path.join(startupDirectory, 'outside-write');
+  fs.mkdirSync(startupDirectory);
+  fs.writeFileSync(
+    path.join(startupDirectory, 'sitecustomize.py'),
+    [
+      'from pathlib import Path',
+      `Path(${JSON.stringify(sentinel)}).write_text('unexpected startup import')`,
+      '',
+    ].join('\n')
+  );
+  const originalPythonPath = process.env.PYTHONPATH;
+  process.env.PYTHONPATH = startupDirectory;
+  try {
+    assert.deepEqual(auditPublicPackage(fixturePackage), []);
+  } finally {
+    if (originalPythonPath === undefined) delete process.env.PYTHONPATH;
+    else process.env.PYTHONPATH = originalPythonPath;
+  }
+
+  assert.equal(fs.existsSync(sentinel), false);
+});
+
+test('rejects a regular file above the public audit per-file limit before reading it', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const notesDirectory = path.join(fixturePackage, 'notes');
+  fs.mkdirSync(notesDirectory);
+  fs.writeFileSync(path.join(notesDirectory, 'large.txt'), Buffer.alloc(4 * 1024 * 1024 + 1, 0x61));
+
+  assert.throws(
+    () => auditPublicPackage(fixturePackage),
+    /public audit per-file limit/
+  );
+});
+
+test('rejects regular files that exceed the public audit aggregate limit', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const notesDirectory = path.join(fixturePackage, 'notes');
+  fs.mkdirSync(notesDirectory);
+  for (let index = 0; index < 3; index += 1) {
+    fs.writeFileSync(path.join(notesDirectory, `aggregate-${index}.txt`), Buffer.alloc(3 * 1024 * 1024, 0x61));
+  }
+
+  assert.throws(
+    () => auditPublicPackage(fixturePackage),
+    /public audit aggregate limit/
+  );
+});
+
+test('rejects a FIFO as a special entry without opening it', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const notesDirectory = path.join(fixturePackage, 'notes');
+  const fifo = path.join(notesDirectory, 'blocked.fifo');
+  fs.mkdirSync(notesDirectory);
+  const created = spawnSync('/usr/bin/mkfifo', [fifo], { encoding: 'utf8' });
+  if (created.error || created.status !== 0) {
+    t.skip('mkfifo is unavailable on this platform');
+    return;
+  }
+  const keepOpen = fs.openSync(fifo, fs.constants.O_NONBLOCK | fs.constants.O_RDWR);
+  t.after(() => fs.closeSync(keepOpen));
+
+  assert.deepEqual(auditPublicPackage(fixturePackage), [
+    {
+      file: 'notes/blocked.fifo',
+      type: 'special-entry',
+      value: 'fifo',
     },
   ]);
 });
@@ -462,6 +493,31 @@ test('reports CommonJS and ESM references that resolve outside the public packag
   ].sort());
 });
 
+test('does not treat import-shaped ordinary strings or templates as source imports', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const sourceDirectory = path.join(fixturePackage, 'src');
+  const outsideRequest = ['..', '..', 'outside-existing.cjs'].join('/');
+  fs.mkdirSync(sourceDirectory);
+  writeSource(sourceDirectory, 'literal-only.mjs', [
+    'const prose = ',
+    JSON.stringify(
+      `require (${JSON.stringify(outsideRequest)}); import (${JSON.stringify(outsideRequest)}); export{thing}from ${JSON.stringify(outsideRequest)};`
+    ),
+    ';\n',
+    'const template = `require ("',
+    outsideRequest,
+    '"); import ("',
+    outsideRequest,
+    '"); export{thing}from "',
+    outsideRequest,
+    '";`;\n',
+    'const endpoint = "https://public.example";\n',
+  ]);
+
+  assert.deepEqual(auditPublicPackage(fixturePackage), []);
+});
+
 test('the audit-public command prints every violation and exits nonzero', async () => {
   const writes = [];
   const violations = [
@@ -497,6 +553,7 @@ test('the benchmark executable prints a real fixture violation and exits nonzero
   const notesDirectory = path.join(fixturePackage, 'notes');
   fs.mkdirSync(notesDirectory);
   fs.writeFileSync(path.join(notesDirectory, 'private.txt'), values.privateUserPath);
+  fs.symlinkSync(values.privateUserPath, path.join(notesDirectory, 'private-link'));
 
   const result = spawnSync(process.execPath, [path.join(fixturePackage, 'bin/benchmark.cjs'), 'audit-public'], {
     encoding: 'utf8',
@@ -504,7 +561,9 @@ test('the benchmark executable prints a real fixture violation and exits nonzero
 
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, new RegExp(`notes/private\\.txt: private-user-path: ${values.privateUserPath}`));
-  assert.match(result.stderr, /public package audit found 1 violation\(s\)/);
+  assert.match(result.stdout, /notes\/private-link: symlink-entry: \[redacted symlink target\]/);
+  assert.doesNotMatch(result.stdout, new RegExp(`symlink-entry: ${values.privateUserPath}`));
+  assert.match(result.stderr, /public package audit found 2 violation\(s\)/);
 });
 
 test('the real package is clean and the audit-public command is read-only', async () => {

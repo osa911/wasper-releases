@@ -52,6 +52,12 @@ function readyDependencies(overrides = {}) {
     findTool(name) {
       return `/usr/bin/${name}`;
     },
+    auditPythonExecutable() {
+      return '/usr/bin/python3';
+    },
+    probeAuditPython() {
+      return true;
+    },
     networkAccess() {
       return true;
     },
@@ -139,23 +145,60 @@ test('rejects a disk shortage without creating benchmark artifacts', t => {
   assert.equal(fs.existsSync(layout.outputRoot), false);
 });
 
-test('reports an absent Python executable with its documented remediation command', t => {
+test('reports an unavailable exact public-audit Python executable', t => {
   const layout = temporaryLayout(t);
 
   const result = doctor(
     layout,
     runtimeLock(),
     readyDependencies({
-      findTool(name) {
-        return name === 'python3' ? null : `/usr/bin/${name}`;
+      auditPythonExecutable() {
+        return '/usr/bin/public-audit-python';
+      },
+      probeAuditPython(executable, arguments_) {
+        assert.equal(executable, '/usr/bin/public-audit-python');
+        assert.deepEqual(arguments_.slice(0, 3), ['-I', '-S', '-B']);
+        return false;
       },
     })
   );
 
   assert.equal(result.ok, false);
-  assert.equal(check(result, 'python3').state, 'blocked');
-  assert.equal(check(result, 'python3').remediation, 'brew install python@3.12');
-  assert.match(formatDoctor(result), /Remediation: brew install python@3\.12/);
+  assert.equal(check(result, 'public-audit-python').state, 'blocked');
+  assert.match(check(result, 'public-audit-python').detail, /\/usr\/bin\/public-audit-python/);
+  assert.equal(fs.existsSync(layout.cacheRoot), false);
+});
+
+test('probes the exact public-audit Python executable instead of PATH python3', t => {
+  const layout = temporaryLayout(t);
+  const probes = [];
+
+  const result = doctor(
+    layout,
+    runtimeLock(),
+    readyDependencies({
+      auditPythonExecutable() {
+        return '/opt/public-audit-python';
+      },
+      probeAuditPython(executable, arguments_) {
+        probes.push({ executable, arguments_ });
+        return true;
+      },
+      findTool(name) {
+        assert.notEqual(name, 'python3');
+        return `/usr/bin/${name}`;
+      },
+    })
+  );
+
+  assert.deepEqual(probes, [
+    {
+      executable: '/opt/public-audit-python',
+      arguments_: ['-I', '-S', '-B', '-c', 'import os; assert os.open in os.supports_dir_fd'],
+    },
+  ]);
+  assert.equal(check(result, 'public-audit-python').state, 'ready');
+  assert.equal(check(result, 'public-audit-python').detail, '/opt/public-audit-python');
   assert.equal(fs.existsSync(layout.cacheRoot), false);
 });
 

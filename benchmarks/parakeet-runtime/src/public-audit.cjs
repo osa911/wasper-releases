@@ -29,12 +29,6 @@ const FORBIDDEN_TEXT_PATTERNS = Object.freeze([
     pattern: /wasper\/\.git(?:[\/\\][^\s'"`<>()\[\]{}]+)*/giu,
   },
 ]);
-const RELATIVE_IMPORT_PATTERNS = Object.freeze([
-  /(?:^|[^\w$])require\s*\(\s*(['"])(\.[^'"]*)\1\s*\)/gmu,
-  /\bimport\s+(?:[\w*${},\s]+?\s+from\s+)?(['"])(\.[^'"]*)\1/gmu,
-  /\bimport\s*\(\s*(['"])(\.[^'"]*)\1\s*\)/gu,
-  /\bexport(?:\s+type)?\s*(?:\*\s*(?:as\s+[\w$]+)?|\{[^}]*\})\s*from\s*(['"])(\.[^'"]*)\1/gmu,
-]);
 const RESOLVABLE_EXTENSIONS = Object.freeze([
   '',
   '.cjs',
@@ -62,86 +56,165 @@ const REGULAR_EXPRESSION_PRECEDERS = new Set([
   'void',
   'yield',
 ]);
-const PYTHON_EXECUTABLE = process.platform === 'darwin' ? '/usr/bin/python3' : 'python3';
+const SYMLINK_TARGET_REDACTION = '[redacted symlink target]';
+const MAX_AUDIT_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_AUDIT_TOTAL_BYTES = 8 * 1024 * 1024;
+const MAX_AUDIT_HELPER_OUTPUT_BYTES = 2 * MAX_AUDIT_TOTAL_BYTES + 1024 * 1024;
+const AUDIT_PYTHON_ENV = Object.freeze({
+  LANG: 'C',
+  LC_ALL: 'C',
+  PATH: '/usr/bin:/bin',
+  PYTHONHASHSEED: '0',
+});
+const AUDIT_PYTHON_PROBE_ARGUMENTS = Object.freeze([
+  '-I',
+  '-S',
+  '-B',
+  '-c',
+  'import os; assert os.open in os.supports_dir_fd',
+]);
+
+function publicAuditPythonExecutable(platform = process.platform) {
+  return platform === 'darwin' || platform === 'linux' ? '/usr/bin/python3' : null;
+}
+
+function publicAuditPythonProbeArguments() {
+  return [...AUDIT_PYTHON_PROBE_ARGUMENTS];
+}
+
 const PINNED_DIRECTORY_WALKER = String.raw`
 import base64
-import errno
 import json
 import os
 import stat
 import sys
 
 EXCLUDED_DIRECTORY_NAMES = {'.git', 'node_modules'}
+MAX_AUDIT_FILE_BYTES = ${MAX_AUDIT_FILE_BYTES}
+MAX_AUDIT_TOTAL_BYTES = ${MAX_AUDIT_TOTAL_BYTES}
+SYMLINK_TARGET_REDACTION = '${SYMLINK_TARGET_REDACTION}'
+
+if not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'O_DIRECTORY'):
+    print(json.dumps({'error': 'no-follow descriptor support is unavailable'}))
+    sys.exit(0)
+
 OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+DIRECTORY_FLAGS = OPEN_FLAGS | os.O_DIRECTORY
 if hasattr(os, 'O_CLOEXEC'):
     OPEN_FLAGS |= os.O_CLOEXEC
+    DIRECTORY_FLAGS |= os.O_CLOEXEC
 
 files = []
-symlinks = []
+violations = []
+total_regular_bytes = 0
 
 def fail(message):
     print(json.dumps({'error': message}))
     sys.exit(0)
 
-def read_regular_file(descriptor):
-    first_chunk = os.read(descriptor, 8192)
-    if b'\x00' in first_chunk and not first_chunk.startswith((b'\xff\xfe', b'\xfe\xff')):
-        return None
-    chunks = [first_chunk]
-    while True:
-        chunk = os.read(descriptor, 1024 * 1024)
-        if not chunk:
-            return b''.join(chunks)
-        chunks.append(chunk)
-
-def record_symlink(parent_descriptor, name, logical_path):
+def classify_entry(parent_descriptor, name):
     try:
-        target = os.readlink(name, dir_fd=parent_descriptor)
-    except OSError as error:
-        fail('could not read a symlink without following it: ' + str(error))
-    symlinks.append({'file': logical_path, 'type': 'symlink-entry', 'value': target})
+        return os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError:
+        fail('could not classify an entry without following it')
+
+def special_kind(mode):
+    if stat.S_ISFIFO(mode):
+        return 'fifo'
+    if stat.S_ISCHR(mode):
+        return 'character-device'
+    if stat.S_ISBLK(mode):
+        return 'block-device'
+    if stat.S_ISSOCK(mode):
+        return 'socket'
+    return 'unknown-special-entry'
+
+def read_regular_file(descriptor, expected_size):
+    remaining = expected_size
+    chunks = []
+    while remaining > 0:
+        chunk = os.read(descriptor, min(65536, remaining))
+        if not chunk:
+            fail('a regular file changed while the public audit was reading it')
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if os.read(descriptor, 1):
+        fail('a regular file exceeded its checked size while the public audit was reading it')
+    return b''.join(chunks)
+
+def record_regular_file(parent_descriptor, name, logical_path, expected_size):
+    try:
+        descriptor = os.open(name, OPEN_FLAGS, dir_fd=parent_descriptor)
+    except OSError:
+        fail('could not open a regular entry without following it')
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != expected_size:
+            fail('a regular file changed while the public audit was opening it')
+        content = read_regular_file(descriptor, expected_size)
+        if b'\x00' in content and not content.startswith((b'\xff\xfe', b'\xfe\xff')):
+            files.append({'file': logical_path, 'size': expected_size, 'binary': True})
+        else:
+            files.append({
+                'file': logical_path,
+                'size': expected_size,
+                'bytes': base64.b64encode(content).decode('ascii'),
+            })
+    finally:
+        os.close(descriptor)
+
+def walk_directory(parent_descriptor, name, logical_path, parts):
+    try:
+        descriptor = os.open(name, DIRECTORY_FLAGS, dir_fd=parent_descriptor)
+    except OSError:
+        fail('could not open a directory entry without following it')
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            fail('a directory changed while the public audit was opening it')
+        walk(descriptor, parts)
+    finally:
+        os.close(descriptor)
 
 def walk(directory_descriptor, parts):
+    global total_regular_bytes
     try:
         names = sorted(os.listdir(directory_descriptor))
-    except OSError as error:
-        fail('could not enumerate a pinned directory: ' + str(error))
+    except OSError:
+        fail('could not enumerate a pinned directory')
     for name in names:
         logical_path = '/'.join(parts + [name])
-        try:
-            descriptor = os.open(name, OPEN_FLAGS, dir_fd=directory_descriptor)
-        except OSError as error:
-            if error.errno == errno.ELOOP:
-                record_symlink(directory_descriptor, name, logical_path)
-                continue
-            fail('could not open an entry without following it: ' + str(error))
-        try:
-            metadata = os.fstat(descriptor)
-            if stat.S_ISDIR(metadata.st_mode):
-                if name not in EXCLUDED_DIRECTORY_NAMES:
-                    walk(descriptor, parts + [name])
-            elif stat.S_ISREG(metadata.st_mode):
-                content = read_regular_file(descriptor)
-                if content is None:
-                    files.append({'file': logical_path, 'binary': True})
-                else:
-                    files.append({
-                        'file': logical_path,
-                        'bytes': base64.b64encode(content).decode('ascii'),
-                    })
-        except OSError as error:
-            fail('could not inspect a pinned entry: ' + str(error))
-        finally:
-            os.close(descriptor)
+        metadata = classify_entry(directory_descriptor, name)
+        if stat.S_ISLNK(metadata.st_mode):
+            violations.append({
+                'file': logical_path,
+                'type': 'symlink-entry',
+                'value': SYMLINK_TARGET_REDACTION,
+            })
+        elif stat.S_ISDIR(metadata.st_mode):
+            if name not in EXCLUDED_DIRECTORY_NAMES:
+                walk_directory(directory_descriptor, name, logical_path, parts + [name])
+        elif stat.S_ISREG(metadata.st_mode):
+            if metadata.st_size > MAX_AUDIT_FILE_BYTES:
+                fail('public audit per-file limit exceeded before reading a regular file')
+            if total_regular_bytes + metadata.st_size > MAX_AUDIT_TOTAL_BYTES:
+                fail('public audit aggregate limit exceeded before reading regular files')
+            total_regular_bytes += metadata.st_size
+            record_regular_file(directory_descriptor, name, logical_path, metadata.st_size)
+        else:
+            violations.append({
+                'file': logical_path,
+                'type': 'special-entry',
+                'value': special_kind(metadata.st_mode),
+            })
 
 try:
     root_descriptor = 3
     if not stat.S_ISDIR(os.fstat(root_descriptor).st_mode):
         fail('the pinned public package root is not a directory')
     walk(root_descriptor, [])
-    print(json.dumps({'files': files, 'violations': symlinks}))
-except OSError as error:
-    fail('could not safely walk the public package: ' + str(error))
+    print(json.dumps({'files': files, 'violations': violations}))
+except OSError:
+    fail('could not safely walk the public package')
 `;
 
 function decodeTextBytes(bytes) {
@@ -175,21 +248,23 @@ function rootSymlinkViolation(root) {
     throw new Error(`public audit could not inspect its root without following it: ${error.message}`);
   }
   if (!metadata.isSymbolicLink()) return null;
-  try {
-    return {
-      file: '.',
-      type: 'symlink-entry',
-      value: fs.readlinkSync(root),
-    };
-  } catch (error) {
-    throw new Error(`public audit could not read its root symlink without following it: ${error.message}`);
-  }
+  return {
+    file: '.',
+    type: 'symlink-entry',
+    value: SYMLINK_TARGET_REDACTION,
+  };
 }
 
 function runPinnedDirectoryWalker(rootDescriptor) {
-  const result = spawnSync(PYTHON_EXECUTABLE, ['-c', PINNED_DIRECTORY_WALKER], {
+  const executable = publicAuditPythonExecutable();
+  if (typeof executable !== 'string' || !path.isAbsolute(executable)) {
+    throw new Error('public audit requires an absolute system Python executable');
+  }
+  const result = spawnSync(executable, ['-I', '-S', '-B', '-c', PINNED_DIRECTORY_WALKER], {
+    cwd: '/',
     encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
+    env: AUDIT_PYTHON_ENV,
+    maxBuffer: MAX_AUDIT_HELPER_OUTPUT_BYTES,
     stdio: ['ignore', 'pipe', 'pipe', rootDescriptor],
   });
   if (result.error) {
@@ -231,16 +306,28 @@ function walkTextFiles(root) {
     const walked = runPinnedDirectoryWalker(rootDescriptor);
     const knownFiles = new Set();
     const files = [];
+    let totalBytes = 0;
     for (const record of walked.files) {
       if (
         typeof record?.file !== 'string' ||
+        !Number.isSafeInteger(record.size) ||
+        record.size < 0 ||
+        record.size > MAX_AUDIT_FILE_BYTES ||
         (record.binary !== true && typeof record.bytes !== 'string')
       ) {
         throw new Error('public audit descriptor traversal returned an invalid file record');
       }
+      totalBytes += record.size;
+      if (totalBytes > MAX_AUDIT_TOTAL_BYTES) {
+        throw new Error('public audit descriptor traversal exceeded its aggregate limit');
+      }
       knownFiles.add(record.file);
       if (record.binary === true) continue;
-      const source = decodeTextBytes(Buffer.from(record.bytes, 'base64'));
+      const bytes = Buffer.from(record.bytes, 'base64');
+      if (bytes.length !== record.size) {
+        throw new Error('public audit descriptor traversal returned an invalid text payload');
+      }
+      const source = decodeTextBytes(bytes);
       if (source !== null) files.push({ file: record.file, source });
     }
     return {
@@ -346,41 +433,49 @@ function copyRegularExpression(source, start) {
   return source.length;
 }
 
-function sourceWithoutComments(source) {
-  let result = '';
+function literalStringValue(source, start, end) {
+  const literal = source.slice(start, end);
+  if (literal[0] === '"') {
+    try {
+      return JSON.parse(literal);
+    } catch {
+      return null;
+    }
+  }
+  return literal.slice(1, -1).replace(/\\(['"\\])/gu, '$1');
+}
+
+function lexSourceTokens(source) {
+  const tokens = [];
   let expectsExpression = true;
   for (let index = 0; index < source.length; ) {
     const character = source[index];
     const next = source[index + 1];
     if (/\s/u.test(character)) {
-      result += character;
       index += 1;
       continue;
     }
     if (character === "'" || character === '"' || character === '`') {
       const end = copyQuotedLiteral(source, index);
-      result += source.slice(index, end);
+      if (character === '`') tokens.push({ type: 'template', value: source.slice(index, end) });
+      else tokens.push({ type: 'string', value: literalStringValue(source, index, end) });
       index = end;
       expectsExpression = false;
       continue;
     }
     if (character === '/' && next === '/') {
       const end = source.indexOf('\n', index + 2);
-      const commentEnd = end === -1 ? source.length : end;
-      result += source.slice(index, commentEnd).replace(/[^\r\n]/gu, ' ');
-      index = commentEnd;
+      index = end === -1 ? source.length : end;
       continue;
     }
     if (character === '/' && next === '*') {
       const end = source.indexOf('*/', index + 2);
-      const commentEnd = end === -1 ? source.length : end + 2;
-      result += source.slice(index, commentEnd).replace(/[^\r\n]/gu, ' ');
-      index = commentEnd;
+      index = end === -1 ? source.length : end + 2;
       continue;
     }
     if (character === '/' && expectsExpression) {
       const end = copyRegularExpression(source, index);
-      result += source.slice(index, end);
+      tokens.push({ type: 'regular-expression', value: source.slice(index, end) });
       index = end;
       expectsExpression = false;
       continue;
@@ -389,7 +484,7 @@ function sourceWithoutComments(source) {
       let end = index + 1;
       while (/[\w$]/u.test(source[end] ?? '')) end += 1;
       const identifier = source.slice(index, end);
-      result += identifier;
+      tokens.push({ type: 'identifier', value: identifier });
       index = end;
       expectsExpression = REGULAR_EXPRESSION_PRECEDERS.has(identifier);
       continue;
@@ -397,12 +492,12 @@ function sourceWithoutComments(source) {
     if (/[0-9]/u.test(character)) {
       let end = index + 1;
       while (/[\w.]/u.test(source[end] ?? '')) end += 1;
-      result += source.slice(index, end);
+      tokens.push({ type: 'number', value: source.slice(index, end) });
       index = end;
       expectsExpression = false;
       continue;
     }
-    result += character;
+    tokens.push({ type: 'punctuator', value: character });
     index += 1;
     if (character === ')' || character === ']' || character === '}') {
       expectsExpression = false;
@@ -410,23 +505,99 @@ function sourceWithoutComments(source) {
       expectsExpression = true;
     }
   }
-  return result;
+  return tokens;
+}
+
+function isIdentifier(token, value) {
+  return token?.type === 'identifier' && token.value === value;
+}
+
+function isPunctuator(token, value) {
+  return token?.type === 'punctuator' && token.value === value;
+}
+
+function relativeStringValue(token) {
+  return token?.type === 'string' && typeof token.value === 'string' && token.value.startsWith('.')
+    ? token.value
+    : null;
+}
+
+function closingPunctuator(tokens, start, opening, closing) {
+  let depth = 0;
+  for (let index = start; index < tokens.length; index += 1) {
+    if (isPunctuator(tokens[index], opening)) depth += 1;
+    if (isPunctuator(tokens[index], closing)) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function sourceImportRequests(source) {
+  const tokens = lexSourceTokens(source);
+  const requests = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (isIdentifier(token, 'require')) {
+      if (isPunctuator(tokens[index - 1], '.')) continue;
+      if (isPunctuator(tokens[index + 1], '(') && isPunctuator(tokens[index + 3], ')')) {
+        const request = relativeStringValue(tokens[index + 2]);
+        if (request !== null) requests.push(request);
+      }
+      continue;
+    }
+    if (isIdentifier(token, 'import')) {
+      if (isPunctuator(tokens[index + 1], '(') && isPunctuator(tokens[index + 3], ')')) {
+        const request = relativeStringValue(tokens[index + 2]);
+        if (request !== null) requests.push(request);
+        continue;
+      }
+      const sideEffectRequest = relativeStringValue(tokens[index + 1]);
+      if (sideEffectRequest !== null) {
+        requests.push(sideEffectRequest);
+        continue;
+      }
+      for (let next = index + 1; next + 1 < tokens.length; next += 1) {
+        if (isPunctuator(tokens[next], ';')) break;
+        if (isIdentifier(tokens[next], 'from')) {
+          const request = relativeStringValue(tokens[next + 1]);
+          if (request !== null) requests.push(request);
+          break;
+        }
+      }
+      continue;
+    }
+    if (!isIdentifier(token, 'export')) continue;
+    let next = index + 1;
+    if (isIdentifier(tokens[next], 'type')) next += 1;
+    if (isPunctuator(tokens[next], '{')) {
+      next = closingPunctuator(tokens, next, '{', '}');
+      if (next === -1) continue;
+      next += 1;
+    } else if (isPunctuator(tokens[next], '*')) {
+      next += 1;
+      if (isIdentifier(tokens[next], 'as')) next += 2;
+    } else {
+      continue;
+    }
+    if (!isIdentifier(tokens[next], 'from')) continue;
+    const request = relativeStringValue(tokens[next + 1]);
+    if (request !== null) requests.push(request);
+  }
+  return requests;
 }
 
 function findUnresolvedRelativeImports(file, source, knownFiles) {
   if (!SOURCE_EXTENSIONS.has(path.extname(file))) return [];
   const unresolved = [];
-  const importSource = sourceWithoutComments(source);
-  for (const pattern of RELATIVE_IMPORT_PATTERNS) {
-    for (const match of importSource.matchAll(pattern)) {
-      const request = match[2];
-      if (!importRequestResolves(file, request, knownFiles)) {
-        unresolved.push({
-          file,
-          type: 'unresolved-relative-import',
-          value: request,
-        });
-      }
+  for (const request of sourceImportRequests(source)) {
+    if (!importRequestResolves(file, request, knownFiles)) {
+      unresolved.push({
+        file,
+        type: 'unresolved-relative-import',
+        value: request,
+      });
     }
   }
   return unresolved;
@@ -449,4 +620,9 @@ function formatPublicAuditViolation({ file, type, value }) {
   return `${file}: ${type}: ${value}`;
 }
 
-module.exports = { auditPublicPackage, formatPublicAuditViolation };
+module.exports = {
+  auditPublicPackage,
+  formatPublicAuditViolation,
+  publicAuditPythonExecutable,
+  publicAuditPythonProbeArguments,
+};

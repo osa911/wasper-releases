@@ -10,7 +10,6 @@ const MINIMUM_NODE_MAJOR = 22;
 const WASPER_RELEASES_URL = 'https://github.com/osa911/wasper-releases/releases';
 const REQUIRED_TOOLS = Object.freeze([
   { id: 'git', command: 'git', remediation: 'xcode-select --install' },
-  { id: 'python3', command: 'python3', remediation: 'brew install python@3.12' },
   { id: 'cmake', command: 'cmake', remediation: 'brew install cmake' },
   { id: 'xcrun', command: 'xcrun', remediation: 'xcode-select --install' },
 ]);
@@ -60,6 +59,20 @@ function defaultFindTool(name) {
   return commandOutput('/usr/bin/which', [name]);
 }
 
+function defaultProbeAuditPython(executable, arguments_) {
+  const result = childProcess.spawnSync(executable, arguments_, {
+    cwd: '/',
+    encoding: 'utf8',
+    env: {
+      LANG: 'C',
+      LC_ALL: 'C',
+      PATH: '/usr/bin:/bin',
+      PYTHONHASHSEED: '0',
+    },
+  });
+  return result.error === undefined && result.status === 0;
+}
+
 function defaultNetworkAccess() {
   return Object.values(os.networkInterfaces())
     .flat()
@@ -107,6 +120,10 @@ function doctor(layout, runtimeLock, dependencies = {}) {
   const systemInfo = dependencies.systemInfo ?? defaultSystemInfo;
   const freeDiskBytes = dependencies.freeDiskBytes ?? defaultFreeDiskBytes;
   const findTool = dependencies.findTool ?? defaultFindTool;
+  const publicAudit = require('./public-audit.cjs');
+  const auditPythonExecutable =
+    dependencies.auditPythonExecutable ?? publicAudit.publicAuditPythonExecutable;
+  const probeAuditPython = dependencies.probeAuditPython ?? defaultProbeAuditPython;
   const networkAccess = dependencies.networkAccess ?? defaultNetworkAccess;
   const discoverWasperApp =
     dependencies.discoverWasperApp ?? require('./runtime/wasper-app.cjs').discoverWasperApp;
@@ -182,6 +199,24 @@ function doctor(layout, runtimeLock, dependencies = {}) {
       )
     );
   }
+
+  const auditPython = auditPythonExecutable(system.platform);
+  const auditPythonReady =
+    typeof auditPython === 'string' &&
+    path.isAbsolute(auditPython) &&
+    probeAuditPython(auditPython, publicAudit.publicAuditPythonProbeArguments()) === true;
+  checks.push(
+    state(
+      'public-audit-python',
+      auditPythonReady,
+      auditPythonReady
+        ? auditPython
+        : typeof auditPython === 'string'
+          ? `${auditPython} cannot run the public-audit descriptor probe.`
+          : 'No supported absolute public-audit Python executable is configured.',
+      'Install a supported system Python 3 runtime for public-audit.'
+    )
+  );
 
   let wasper;
   try {
