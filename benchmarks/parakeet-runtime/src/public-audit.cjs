@@ -32,7 +32,7 @@ const RELATIVE_IMPORT_PATTERNS = Object.freeze([
   /(?:^|[^\w$])require\(\s*(['"])(\.[^'"]*)\1\s*\)/gmu,
   /\bimport\s+(?:[\w*${},\s]+?\s+from\s+)?(['"])(\.[^'"]*)\1/gmu,
   /\bimport\(\s*(['"])(\.[^'"]*)\1\s*\)/gu,
-  /\bexport\s+(?:\*\s*(?:as\s+[\w$]+)?|\{[^}]*\})\s+from\s+(['"])(\.[^'"]*)\1/gmu,
+  /\bexport(?:\s+type)?\s*(?:\*\s*(?:as\s+[\w$]+)?|\{[^}]*\})\s*from\s*(['"])(\.[^'"]*)\1/gmu,
 ]);
 const RESOLVABLE_EXTENSIONS = Object.freeze(['', '.cjs', '.js', '.json', '.mjs', '.node']);
 
@@ -77,36 +77,11 @@ function walkTextFiles(root) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const entryPath = path.join(current, entry.name);
       if (entry.isSymbolicLink()) {
-        let target;
-        try {
-          target = fs.realpathSync.native(entryPath);
-        } catch (error) {
-          if (error?.code === 'ENOENT') {
-            violations.push({
-              file: relativePath(root, entryPath),
-              type: 'unresolved-symlink',
-              value: fs.readlinkSync(entryPath),
-            });
-            continue;
-          }
-          throw error;
-        }
-        if (!isInside(root, target)) {
-          violations.push({
-            file: relativePath(root, entryPath),
-            type: 'escaping-symlink',
-            value: fs.readlinkSync(entryPath),
-          });
-          continue;
-        }
-        const targetStat = fs.statSync(entryPath);
-        if (targetStat.isDirectory()) {
-          if (!EXCLUDED_DIRECTORY_NAMES.has(entry.name)) pending.push(entryPath);
-          continue;
-        }
-        if (!targetStat.isFile()) continue;
-        const source = readTextFile(entryPath);
-        if (source !== null) files.push({ filePath: entryPath, source });
+        violations.push({
+          file: relativePath(root, entryPath),
+          type: 'symlink-entry',
+          value: fs.readlinkSync(entryPath),
+        });
         continue;
       }
       if (entry.isDirectory() && EXCLUDED_DIRECTORY_NAMES.has(entry.name)) continue;
@@ -121,7 +96,7 @@ function walkTextFiles(root) {
   }
   return {
     files: files.sort((left, right) => left.filePath.localeCompare(right.filePath)),
-    violations,
+    violations: violations.sort((left, right) => left.file.localeCompare(right.file)),
   };
 }
 
@@ -146,26 +121,29 @@ function importRequestResolves(importingFile, request, root) {
   });
 }
 
-function jsonStringValues(source) {
+function jsonStringFragments(source) {
   let parsed;
   try {
     parsed = JSON.parse(source);
   } catch {
     return [];
   }
-  const values = [];
+  const fragments = [];
   const pending = [parsed];
   while (pending.length > 0) {
     const value = pending.pop();
     if (typeof value === 'string') {
-      values.push(value);
+      fragments.push(value);
     } else if (Array.isArray(value)) {
       pending.push(...value);
     } else if (value !== null && typeof value === 'object') {
-      pending.push(...Object.values(value));
+      for (const [key, child] of Object.entries(value)) {
+        fragments.push(key);
+        pending.push(child);
+      }
     }
   }
-  return values;
+  return fragments;
 }
 
 function findForbiddenText(file, source) {
@@ -179,7 +157,7 @@ function findForbiddenText(file, source) {
   }
   if (path.extname(file) !== '.json') return violations;
   for (const { type, pattern } of FORBIDDEN_TEXT_PATTERNS) {
-    for (const value of jsonStringValues(source)) {
+    for (const value of jsonStringFragments(source)) {
       for (const match of value.matchAll(pattern)) {
         if (rawValues.has(`${type}\u0000${match[0]}`)) continue;
         violations.push({ file, type, value: match[0] });
@@ -189,11 +167,46 @@ function findForbiddenText(file, source) {
   return violations;
 }
 
+function sourceWithoutComments(source) {
+  let result = '';
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "'" || character === '"' || character === '`') {
+      const quote = character;
+      result += character;
+      for (index += 1; index < source.length; index += 1) {
+        const quotedCharacter = source[index];
+        result += quotedCharacter;
+        if (quotedCharacter === '\\' && index + 1 < source.length) {
+          index += 1;
+          result += source[index];
+          continue;
+        }
+        if (quotedCharacter === quote) break;
+      }
+      continue;
+    }
+    if (character !== '/' || (source[index + 1] !== '/' && source[index + 1] !== '*')) {
+      result += character;
+      continue;
+    }
+    const commentEnd =
+      source[index + 1] === '/'
+        ? source.indexOf('\n', index + 2)
+        : source.indexOf('*/', index + 2);
+    const end = commentEnd === -1 ? source.length : commentEnd + (source[index + 1] === '/' ? 0 : 2);
+    result += source.slice(index, end).replace(/[^\r\n]/gu, ' ');
+    index = end - 1;
+  }
+  return result;
+}
+
 function findUnresolvedRelativeImports(root, filePath, source) {
   if (!SOURCE_EXTENSIONS.has(path.extname(filePath))) return [];
   const unresolved = [];
+  const importSource = sourceWithoutComments(source);
   for (const pattern of RELATIVE_IMPORT_PATTERNS) {
-    for (const match of source.matchAll(pattern)) {
+    for (const match of importSource.matchAll(pattern)) {
       const request = match[2];
       if (!importRequestResolves(filePath, request, root)) {
         unresolved.push({

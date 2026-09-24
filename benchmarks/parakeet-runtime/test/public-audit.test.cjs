@@ -172,7 +172,42 @@ test('decodes escaped JSON and UTF-16 text before checking private references', 
   ]);
 });
 
-test('scans contained symlink files and reports escaping symlinks', t => {
+test('decodes escaped JSON keys before checking private references', t => {
+  const { auditPublicPackage } = require('../src/public-audit.cjs');
+  const fixturePackage = temporaryPackage(t);
+  const values = privateFixtureValues();
+  const notesDirectory = path.join(fixturePackage, 'notes');
+  fs.mkdirSync(notesDirectory);
+  fs.writeFileSync(
+    path.join(notesDirectory, 'escaped-keys.json'),
+    escapedJsonDocument({
+      [values.localFileUrl]: 'file-url key',
+      [values.privateRepositoryGit]: 'private remote key',
+      [values.privateUserPath]: 'private path key',
+      [`${values.publicRepository}/tree/main`]: 'public remote key',
+    })
+  );
+
+  assert.deepEqual(auditPublicPackage(fixturePackage), [
+    {
+      file: 'notes/escaped-keys.json',
+      type: 'private-user-path',
+      value: values.privateUserPath,
+    },
+    {
+      file: 'notes/escaped-keys.json',
+      type: 'private-wasper-repository-url',
+      value: values.privateRepositoryGit,
+    },
+    {
+      file: 'notes/escaped-keys.json',
+      type: 'local-file-url',
+      value: values.localFileUrl,
+    },
+  ]);
+});
+
+test('rejects contained and escaping symlink entries without reading their targets', t => {
   const { auditPublicPackage } = require('../src/public-audit.cjs');
   const fixturePackage = temporaryPackage(t);
   const values = privateFixtureValues();
@@ -186,19 +221,35 @@ test('scans contained symlink files and reports escaping symlinks', t => {
 
   const violations = auditPublicPackage(fixturePackage);
 
-  assert.ok(
-    violations.some(
-      violation =>
-        violation.file === 'notes/inside-link.txt' &&
-        violation.type === 'private-git-control-path' &&
-        violation.value === values.privateGitControlPath
-    )
+  assert.deepEqual(
+    violations.filter(violation => violation.file.endsWith('-link.txt')),
+    [
+      {
+        file: 'notes/inside-link.txt',
+        type: 'symlink-entry',
+        value: fs.readlinkSync(path.join(notesDirectory, 'inside-link.txt')),
+      },
+      {
+        file: 'notes/outside-link.txt',
+        type: 'symlink-entry',
+        value: fs.readlinkSync(path.join(notesDirectory, 'outside-link.txt')),
+      },
+    ]
   );
   assert.ok(
     violations.some(
       violation =>
-        violation.file === 'notes/outside-link.txt' && violation.type === 'escaping-symlink'
+        violation.file === 'notes/inside-target.txt' &&
+        violation.type === 'private-git-control-path' &&
+        violation.value === values.privateGitControlPath
     )
+  );
+  assert.equal(
+    violations.some(
+      violation =>
+        violation.type === 'private-user-path' && violation.value === values.privateUserPath
+    ),
+    false
   );
 });
 
@@ -207,9 +258,12 @@ test('reports CommonJS and ESM references that resolve outside the public packag
   const fixturePackage = temporaryPackage(t);
   const sourceDirectory = path.join(fixturePackage, 'src');
   const outsideTarget = path.join(path.dirname(fixturePackage), 'outside-existing.cjs');
+  const outsideTypeTarget = path.join(path.dirname(fixturePackage), 'outside-existing.ts');
   const outsideRequest = ['..', '..', 'outside-existing.cjs'].join('/');
+  const outsideTypeRequest = ['..', '..', 'outside-existing.ts'].join('/');
   fs.mkdirSync(sourceDirectory);
   fs.writeFileSync(outsideTarget, 'export const dependency = true;\n');
+  fs.writeFileSync(outsideTypeTarget, 'export type Thing = string;\n');
   writeSource(sourceDirectory, 'commonjs.cjs', [
     'require(',
     JSON.stringify(outsideRequest),
@@ -240,6 +294,20 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     'export * as namespace from ',
     JSON.stringify(outsideRequest),
     ';\n',
+    'export{thing}from ',
+    JSON.stringify(outsideRequest),
+    ';\n',
+    'export /* comment */ {thing} /* comment */ from /* comment */ ',
+    JSON.stringify(outsideRequest),
+    ';\n',
+    'export type { Thing } from ',
+    JSON.stringify(outsideTypeRequest),
+    ';\n',
+    'const endpoint = ',
+    JSON.stringify('https://public.example'),
+    '; export{thing}from ',
+    JSON.stringify(outsideRequest),
+    ';\n',
   ]);
 
   const references = auditPublicPackage(fixturePackage)
@@ -254,6 +322,10 @@ test('reports CommonJS and ESM references that resolve outside the public packag
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
     `src/esm-re-export.mjs:${outsideRequest}`,
+    `src/esm-re-export.mjs:${outsideRequest}`,
+    `src/esm-re-export.mjs:${outsideRequest}`,
+    `src/esm-re-export.mjs:${outsideRequest}`,
+    `src/esm-re-export.mjs:${outsideTypeRequest}`,
     `src/esm-side-effect.mjs:${outsideRequest}`,
   ]);
 });
