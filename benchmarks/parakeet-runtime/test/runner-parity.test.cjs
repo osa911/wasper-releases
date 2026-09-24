@@ -378,6 +378,46 @@ test('ready-short uses only ready runtime IDs and the automatic short cohort', a
   assert.match(writes.join(''), /ready-short.*partial-non-comparable/);
 });
 
+test('smoke bootstraps only ready runtimes against the automatic short corpus', async t => {
+  const layout = temporaryLayout(t);
+  const runtimeLock = loadRuntimeLock();
+  const expectedRuntimeIds = runtimeLock.runtimes
+    .filter(runtime => runtime.reproduction.state === 'ready')
+    .map(runtime => runtime.id);
+  const bootstrapped = [];
+  let recovered;
+  let smoke;
+
+  const result = await runCli(['smoke'], {
+    homeDirectory: layout.homeDirectory,
+    loadRuntimeLockImpl: () => runtimeLock,
+    async bootstrapRuntimeImpl(runtimeId) {
+      bootstrapped.push(runtimeId);
+    },
+    async recoverCorpusImpl(options) {
+      recovered = options;
+      return {
+        manifest: {
+          schema: 'wasper.public-run-corpus.v1',
+          cohort: 'short',
+          fixtures: [{ fixtureId: 'en-short-synthetic', cohort: 'short' }],
+        },
+      };
+    },
+    async smokeRuntimeAdaptersImpl(options) {
+      smoke = options;
+      return { cells: [{ runtimeId: 'wasper-metal-int8', status: 'ok' }] };
+    },
+  });
+
+  assert.deepEqual(bootstrapped, expectedRuntimeIds);
+  assert.equal(recovered.cohort, 'short');
+  assert.equal(recovered.acceptSourceTerms, false);
+  assert.deepEqual(smoke.runtimeDescriptors.map(runtime => runtime.id), expectedRuntimeIds);
+  assert.equal(result.mode, 'ready-short');
+  assert.equal(result.verification, 'partial-non-comparable');
+});
+
 test('full mode still reaches blocked runtime state before corpus recovery', async t => {
   const layout = temporaryLayout(t);
   const bootstrapped = [];

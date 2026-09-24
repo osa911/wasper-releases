@@ -43,7 +43,7 @@ function parseCommandArguments(argv) {
   for (let index = 0; index < argumentsList.length; index += 1) {
     const argument = argumentsList[index];
     if (argument === '--accept-source-terms' && !options.acceptSourceTerms) {
-      if (command === 'clean' || command === 'doctor') {
+      if (command === 'clean' || command === 'doctor' || command === 'smoke') {
         throw new TypeError(`${command} does not accept --accept-source-terms`);
       }
       options.acceptSourceTerms = true;
@@ -274,19 +274,33 @@ async function runCli(
     const recoverCorpus =
       recoverCorpusImpl ?? require('./runtime/corpus-recovery.cjs').recoverCorpus;
     const loadRuntimeLock = loadRuntimeLockImpl ?? require('./runtime/locks.cjs').loadRuntimeLock;
+    const bootstrapRuntime =
+      bootstrapRuntimeImpl ?? require('./runtime/bootstrap.cjs').bootstrapRuntime;
     const smokeRuntimeAdapters =
       smokeRuntimeAdaptersImpl ?? require('./runtime/smoke.cjs').smokeRuntimeAdapters;
+    const runtimeLock = loadRuntimeLock();
+    const runtimeDescriptors = readyShortRuntimeDescriptors(runtimeLock);
+    for (const runtime of runtimeDescriptors) {
+      await bootstrapRuntime(runtime.id, { layout: plan.layout, lock: runtimeLock });
+    }
     const prepared = await recoverCorpus({
       layout: plan.layout,
-      cohort: 'all',
-      acceptSourceTerms: plan.acceptSourceTerms,
+      cohort: 'short',
+      acceptSourceTerms: false,
     });
     const smoke = await smokeRuntimeAdapters({
       layout: plan.layout,
       manifest: prepared.manifest,
-      runtimeLock: loadRuntimeLock(),
+      runtimeLock,
+      runtimeDescriptors,
     });
-    const result = Object.freeze({ command: plan.command, writes: true, ...smoke });
+    const result = Object.freeze({
+      command: plan.command,
+      writes: true,
+      mode: 'ready-short',
+      verification: READY_SHORT_VERIFICATION,
+      ...smoke,
+    });
     stdout.write(`${JSON.stringify(result)}\n`);
     return result;
   }

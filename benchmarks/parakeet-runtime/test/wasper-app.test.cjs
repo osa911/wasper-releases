@@ -269,6 +269,7 @@ test('routes --wasper-app from the smoke command into the resolved layout', asyn
   });
   const app = createApp(path.join(homeDirectory, 'Applications'), 'Wasper.app', '1.8.1');
   let receivedLayout = null;
+  const bootstrapLayouts = [];
 
   await runCli(
     [
@@ -282,6 +283,9 @@ test('routes --wasper-app from the smoke command into the resolved layout', asyn
       homeDirectory,
       repositoryRoot: path.resolve(__dirname, '..'),
       stdout: { write() {} },
+      async bootstrapRuntimeImpl(_runtimeId, { layout }) {
+        bootstrapLayouts.push(layout);
+      },
       async recoverCorpusImpl() {
         return { manifest: { schema: 'wasper.public-run-corpus.v1', fixtures: [] } };
       },
@@ -293,6 +297,8 @@ test('routes --wasper-app from the smoke command into the resolved layout', asyn
   );
 
   assert.equal(receivedLayout.wasperApp, app.appPath);
+  assert.ok(bootstrapLayouts.length > 0);
+  assert.ok(bootstrapLayouts.every(layout => layout.wasperApp === app.appPath));
 });
 
 test('preserves the Wasper release classification in model identity', t => {

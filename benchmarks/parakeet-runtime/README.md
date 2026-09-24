@@ -52,6 +52,11 @@ Keep `.venv` activated whenever you run `npm run doctor`, `npm run benchmark`,
 or `npm run smoke`. The benchmark uses the active `python3` so its pinned
 runtime packages stay isolated from the system Python installation.
 
+`npm run smoke` is a quick setup check. It acquires and starts only the five
+publicly ready runtimes, then runs one automatic short recording through each.
+Like `ready-short`, it is not a full seven-runtime comparison and does not
+download long recordings or require source-terms acceptance.
+
 `npm run doctor` is read-only. It does not install software, create the cache,
 download a model, or fetch a corpus. It prints the hardware, Darwin platform
 and kernel release, Node version, available disk, cache and output locations,
