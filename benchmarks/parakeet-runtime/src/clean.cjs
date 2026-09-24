@@ -12,10 +12,16 @@ const {
   isInside,
   resolveLayout,
 } = require('./config.cjs');
+const { publicAuditPythonExecutable } = require('./public-audit.cjs');
 
 const CLEANUP_DIRECTORY_NAMES = Object.freeze(['artifacts', 'corpus', 'holders', 'runs']);
 const DELETE_HELPER = path.join(__dirname, 'delete-owned-cache.py');
-const DEFAULT_PYTHON = 'python3';
+const CLEAN_PYTHON_ENV = Object.freeze({
+  LANG: 'C',
+  LC_ALL: 'C',
+  PATH: '/usr/bin:/bin',
+  PYTHONHASHSEED: '0',
+});
 const execFileAsync = promisify(execFile);
 const LAYOUT_FIELDS = Object.freeze([
   'packageRoot',
@@ -147,13 +153,30 @@ function sameIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+function trustedPython() {
+  const executable = publicAuditPythonExecutable();
+  if (typeof executable !== 'string' || !path.isAbsolute(executable)) {
+    throw new Error('benchmark cleanup requires an absolute system Python executable');
+  }
+  return executable;
+}
+
 async function runDescriptorHelper(pythonExecutable, arguments_) {
+  if (typeof pythonExecutable !== 'string' || !path.isAbsolute(pythonExecutable)) {
+    throw new Error('benchmark cleanup requires an absolute Python executable');
+  }
   let stdout;
   try {
-    ({ stdout } = await execFileAsync(pythonExecutable, [DELETE_HELPER, ...arguments_], {
-      encoding: 'utf8',
-      maxBuffer: 1024 * 1024,
-    }));
+    ({ stdout } = await execFileAsync(
+      pythonExecutable,
+      ['-I', '-S', '-B', DELETE_HELPER, ...arguments_],
+      {
+        cwd: '/',
+        encoding: 'utf8',
+        env: CLEAN_PYTHON_ENV,
+        maxBuffer: 1024 * 1024,
+      }
+    ));
   } catch (error) {
     const detail = error?.stderr?.trim();
     throw new Error(detail || 'descriptor-relative benchmark cleanup failed', { cause: error });
@@ -256,7 +279,7 @@ async function deleteWithDirectoryDescriptors({ pythonExecutable, quarantineRoot
   return result.removed;
 }
 
-async function clean(layout, { beforeRemove, pythonExecutable = DEFAULT_PYTHON } = {}) {
+async function clean(layout, { beforeRemove, pythonExecutable = trustedPython() } = {}) {
   const resolvedLayout = canonicalLayout(layout);
   const cacheRoot = fs.realpathSync.native(resolvedLayout.cacheRoot);
   if (cacheRoot !== resolvedLayout.cacheRoot) {

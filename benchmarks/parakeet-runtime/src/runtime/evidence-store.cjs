@@ -7,6 +7,7 @@ const { isDeepStrictEqual } = require('node:util');
 
 const { canonicalJson } = require('../asr-quality/manifest.cjs');
 const { OWNER_FILE, expectedOwnershipMarker, resolveLayout } = require('../config.cjs');
+const { ownedRuntimeStorage } = require('./owned-runtime-storage.cjs');
 
 function cloneJson(value, label = 'value') {
   try {
@@ -22,11 +23,6 @@ function hash(value) {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
-function writeJson(filePath, value) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
 function resolveOwnedLayout(layout) {
@@ -66,10 +62,12 @@ function timestampId(now) {
 
 function createEvidenceStore({ layout, runIdentity, resume = false, clock = () => new Date() }) {
   const ownedLayout = resolveOwnedLayout(layout);
+  const storage = ownedRuntimeStorage(ownedLayout);
   if (typeof clock !== 'function') throw new TypeError('evidence clock must be a function');
   const identity = cloneJson(runIdentity, 'runIdentity');
   const runId = `${timestampId(clock())}-${hash(identity).slice(0, 12)}`;
-  const runDirectory = path.join(ownedLayout.outputRoot, runId);
+  const outputRoot = storage.directory(ownedLayout.outputRoot);
+  const runDirectory = storage.directory(path.join(outputRoot, runId));
   const runPath = path.join(runDirectory, 'run.json');
   const requestsDirectory = path.join(runDirectory, 'requests');
   const activationsDirectory = path.join(runDirectory, 'activations');
@@ -97,12 +95,23 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
       }
       throw new Error(`cannot resume missing run ${runId}`);
     }
-    writeJson(runPath, {
-      schema: 'wasper.parakeet-runtime-benchmark.private-run-evidence.v1',
-      runId,
-      identity,
-      createdAt: new Date().toISOString(),
-    });
+    storage.writeExclusive(
+      runPath,
+      `${JSON.stringify(
+        {
+          schema: 'wasper.parakeet-runtime-benchmark.private-run-evidence.v1',
+          runId,
+          identity,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2
+      )}\n`
+    );
+  }
+
+  function writeJson(filePath, value) {
+    storage.writeReplace(filePath, `${JSON.stringify(value, null, 2)}\n`);
   }
 
   function requestPath(order) {
@@ -119,15 +128,25 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
       if (!Number.isSafeInteger(record?.sequence) || record.sequence < 0) {
         throw new TypeError('activation record sequence must be a non-negative integer');
       }
+      const directory = storage.directory(activationsDirectory);
       writeJson(
-        path.join(activationsDirectory, `${String(record.sequence).padStart(4, '0')}.json`),
+        path.join(directory, `${String(record.sequence).padStart(4, '0')}.json`),
         cloneJson(record, 'activation record')
       );
     },
     writeRequest(record) {
       const filePath = requestPath(record?.order);
       if (fs.existsSync(filePath)) return;
-      writeJson(filePath, cloneJson(record, 'request record'));
+      storage.directory(requestsDirectory);
+      try {
+        storage.writeExclusive(
+          filePath,
+          `${JSON.stringify(cloneJson(record, 'request record'), null, 2)}\n`
+        );
+      } catch (error) {
+        if (/File exists/u.test(error.message)) return;
+        throw error;
+      }
     },
     readRequests() {
       if (!fs.existsSync(requestsDirectory)) return [];
@@ -157,7 +176,7 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
           'private text artifact must be a lowercase Markdown filename and string'
         );
       }
-      fs.writeFileSync(path.join(runDirectory, name), text, { mode: 0o600 });
+      storage.writeReplace(path.join(runDirectory, name), text);
     },
     evidenceHash(records) {
       return hash(

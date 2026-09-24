@@ -62,9 +62,9 @@ def delete_entry(parent_fd, name, label):
                 delete_entry(descriptor, child_name, f"{label}/{child_name}")
             current_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             require_same_identity(entry_stat, current_stat, label)
+            os.rmdir(name, dir_fd=parent_fd)
         finally:
             os.close(descriptor)
-        os.rmdir(name, dir_fd=parent_fd)
         return
 
     if stat.S_ISREG(entry_stat.st_mode):
@@ -76,9 +76,9 @@ def delete_entry(parent_fd, name, label):
             require_same_identity(entry_stat, os.fstat(descriptor), label)
             current_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             require_same_identity(entry_stat, current_stat, label)
+            os.unlink(name, dir_fd=parent_fd)
         finally:
             os.close(descriptor)
-        os.unlink(name, dir_fd=parent_fd)
         return
 
     raise UnsafeCleanupError(f"{label} has an unsupported file type")
@@ -98,9 +98,9 @@ def delete_generated_directory(root_fd, name):
             delete_entry(descriptor, child_name, f"{name}/{child_name}")
         current_stat = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
         require_same_identity(directory_stat, current_stat, f"generated directory {name}")
+        os.rmdir(name, dir_fd=root_fd)
     finally:
         os.close(descriptor)
-    os.rmdir(name, dir_fd=root_fd)
     return True
 
 

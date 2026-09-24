@@ -1,12 +1,14 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFile, spawn } = require('node:child_process');
+const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const Ajv = require('ajv');
-const { resolveLayout, writeOwnershipMarker, OWNER_FILE } = require('../../config.cjs');
+const { ownedRuntimeStorage } = require('../owned-runtime-storage.cjs');
+const { publicAuditPythonExecutable } = require('../../public-audit.cjs');
 const {
   NORMALIZED_AUDIO_TRANSFORM,
   inspectAudio,
@@ -23,11 +25,26 @@ const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const SCHEMA = 'wasper.public-corpus-sources.v1';
 const REFERENCE_LIMIT = 8 * 1024 ** 2;
 const SOURCE_LIMIT = 2 * 1024 ** 3;
+const ARCHIVE_MEMBER_READER = path.join(__dirname, 'read-archive-member.py');
+const TRUSTED_PYTHON_ENV = Object.freeze({
+  LANG: 'C',
+  LC_ALL: 'C',
+  PATH: '/usr/bin:/bin',
+  PYTHONHASHSEED: '0',
+});
 const sourceSchema = require('../../../schema/public-corpus.schema.json');
 const validateFixture = new Ajv({ allErrors: true }).compile(sourceSchema.definitions.fixture);
 
 function sourceError(fixture, message, cause) {
   return new Error(`${fixture.fixtureId} (${fixture.sourceUrl}): ${message}`, { cause });
+}
+
+function trustedPython() {
+  const executable = publicAuditPythonExecutable();
+  if (typeof executable !== 'string' || !path.isAbsolute(executable)) {
+    throw new Error('public corpus requires an absolute system Python executable');
+  }
+  return executable;
 }
 
 function validateUrl(value, label) {
@@ -137,166 +154,50 @@ function selectFixtures(manifests, cohort, acceptSourceTerms) {
   return fixtures;
 }
 
-// Hold identities across asynchronous network/process work. Never reuse, overwrite,
-// or remove a partial file owned by a different attempt.
+// Create corpus paths through the shared descriptor-relative ownership boundary.
 function ownedStorage(supplied) {
-  const layout = resolveLayout({
-    cacheDir: supplied.cacheRoot,
-    homeDirectory: supplied.homeDirectory,
-    outputDir: supplied.outputRoot,
+  const storage = ownedRuntimeStorage(supplied);
+  const corpus = storage.directory(storage.layout.corpusRoot);
+  return Object.assign(storage, {
+    archives: new Map(),
+    downloads: storage.directory(path.join(corpus, 'downloads')),
+    fixtures: storage.directory(path.join(corpus, 'fixtures')),
   });
-  if (layout.cacheRoot !== supplied.cacheRoot || layout.corpusRoot !== supplied.corpusRoot)
-    throw new Error('corpus layout changed or is forged');
-  if (
-    fs.existsSync(layout.cacheRoot) &&
-    !fs.existsSync(path.join(layout.cacheRoot, OWNER_FILE)) &&
-    fs.readdirSync(layout.cacheRoot).length
-  ) {
-    throw new Error('refusing an unmarked nonempty benchmark cache');
-  }
-  writeOwnershipMarker(layout);
-  const directories = new Map();
-  const files = new Map();
-  const identity = info => `${info.dev}:${info.ino}`;
-  const rememberDirectory = directory => {
-    const info = fs.lstatSync(directory);
-    if (
-      !info.isDirectory() ||
-      info.isSymbolicLink() ||
-      fs.realpathSync.native(directory) !== directory
-    )
-      throw new Error('corpus cache directory must not be a symlink');
-    directories.set(directory, identity(info));
-  };
-  rememberDirectory(layout.cacheRoot);
-  const check = () => {
-    for (const [directory, expected] of directories) {
-      const info = fs.lstatSync(directory);
-      if (
-        !info.isDirectory() ||
-        info.isSymbolicLink() ||
-        identity(info) !== expected ||
-        fs.realpathSync.native(directory) !== directory
-      )
-        throw new Error('corpus cache directory changed during acquisition');
-    }
-    const marker = path.join(layout.cacheRoot, OWNER_FILE);
-    const info = fs.lstatSync(marker);
-    if (
-      !info.isFile() ||
-      info.isSymbolicLink() ||
-      fs.readFileSync(marker, 'utf8') !== markerText
-    )
-      throw new Error('corpus ownership marker changed during acquisition');
-  };
-  const markerText = fs.readFileSync(path.join(layout.cacheRoot, OWNER_FILE), 'utf8');
-  const directory = relative => {
-    check();
-    const target = path.join(layout.cacheRoot, relative);
-    try {
-      fs.mkdirSync(target, { mode: 0o700 });
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-    rememberDirectory(target);
-    return target;
-  };
-  directory('corpus');
-  const downloads = directory('corpus/downloads');
-  const fixtures = directory('corpus/fixtures');
-  const archives = new Map();
-  const regular = target => {
-    check();
-    const info = fs.lstatSync(target);
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
-      throw new Error('corpus cache file must be a regular, unshared file');
-    return info;
-  };
-  const create = target => {
-    check();
-    const fd = fs.openSync(
-      target,
-      fs.constants.O_WRONLY |
-        fs.constants.O_CREAT |
-        fs.constants.O_EXCL |
-        fs.constants.O_NOFOLLOW,
-      0o600
-    );
-    files.set(target, identity(fs.fstatSync(fd)));
-    return fd;
-  };
-  const move = (from, to) => {
-    check();
-    if (
-      fs.existsSync(to) ||
-      (() => {
-        try {
-          fs.lstatSync(to);
-          return true;
-        } catch (error) {
-          if (error.code === 'ENOENT') return false;
-          throw error;
-        }
-      })()
-    )
-      throw new Error('corpus promotion destination already exists');
-    if (files.get(from) !== identity(regular(from)))
-      throw new Error('partial download changed before promotion');
-    fs.renameSync(from, to);
-    files.delete(from);
-    files.set(to, identity(fs.lstatSync(to)));
-  };
-  const remove = target => {
-    check();
-    if (!files.has(target)) return;
-    if (identity(regular(target)) !== files.get(target))
-      throw new Error('partial file changed before cleanup');
-    fs.unlinkSync(target);
-    files.delete(target);
-  };
-  return {
-    layout,
-    downloads,
-    fixtures,
-    archives,
-    check,
-    regular,
-    create,
-    move,
-    remove,
-    files,
-    directories,
-    rememberDirectory,
-    identity,
-  };
 }
 
 async function download(storage, url, target, expectedHash, limit, label) {
-  const fd = storage.create(target);
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(60 * 60_000) });
+    storage.regular(target);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (fs.existsSync(target)) {
+    throw new Error(`${label} EEXIST at ${url}`);
+  }
+  const response = await fetch(url, { signal: AbortSignal.timeout(60 * 60_000) });
+  try {
     storage.check();
-    validateUrl(response.url, 'redirect URL');
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`${label} HTTP ${response.status} at ${url}`);
+  } catch (error) {
+    if (/symlink|changed/u.test(error.message)) {
+      throw new Error('corpus cache directory changed during acquisition', { cause: error });
     }
-    let bytes = 0;
-    const digest = crypto.createHash('sha256');
-    for await (const chunk of response.body) {
-      storage.check();
-      bytes += chunk.length;
-      if (bytes > limit) throw new Error(`${label} exceeds download byte limit`);
-      digest.update(chunk);
-      let offset = 0;
-      while (offset < chunk.length)
-        offset += fs.writeSync(fd, chunk, offset, chunk.length - offset);
+    throw error;
+  }
+  validateUrl(response.url, 'redirect URL');
+  if (!response.ok || !response.body) {
+    await response.body?.cancel();
+    throw new Error(`${label} HTTP ${response.status} at ${url}`);
+  }
+  try {
+    await storage.download(target, response.body, expectedHash, limit);
+  } catch (error) {
+    if (/File exists/u.test(error.message)) {
+      throw new Error(`${label} EEXIST at ${url}`, { cause: error });
     }
-    if (digest.digest('hex') !== expectedHash)
-      throw new Error(`${label} SHA-256 mismatch at ${url}`);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+    if (/SHA-256|size mismatch/u.test(error.message)) {
+      throw new Error(`${label} SHA-256 mismatch at ${url}`, { cause: error });
+    }
+    throw error;
   }
 }
 
@@ -311,28 +212,32 @@ async function acquire(storage, url, acquisition, part, expectedHash, limit, lab
         throw new Error(`archive SHA-256 mismatch at ${url}`);
     } else {
       await download(storage, url, part, acquisition.archiveSha256, 128 * 1024 ** 3, 'archive');
-      storage.move(part, archivePath);
+      storage.promote(part, archivePath);
       // A verified archive is reusable even if a selected member later fails.
       storage.files.delete(archivePath);
     }
     storage.archives.set(acquisition.archiveSha256, archivePath);
   }
   storage.regular(archivePath);
-  const fd = storage.create(part);
+  const fd = storage.openDirectory(path.dirname(part));
   try {
-    // The helper streams directly into this attempt's exclusively created file.
-    // It never materializes an archive path, link, or an entire member in memory.
     await new Promise((resolve, reject) => {
-      const child = spawn(
-        'python3',
+      const child = childProcess.spawn(
+        trustedPython(),
         [
-          path.join(__dirname, 'read-archive-member.py'),
+          '-I',
+          '-S',
+          '-B',
+          ARCHIVE_MEMBER_READER,
           archivePath,
           acquisition.member,
           String(limit),
+          path.basename(part),
         ],
         {
-          stdio: ['ignore', fd, 'pipe'],
+          cwd: '/',
+          env: TRUSTED_PYTHON_ENV,
+          stdio: ['ignore', 'ignore', 'pipe', fd],
           timeout: 60 * 60_000,
           killSignal: 'SIGKILL',
         }
@@ -351,10 +256,10 @@ async function acquire(storage, url, acquisition, part, expectedHash, limit, lab
       );
     });
     storage.check();
-    fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
   }
+  storage.track(part);
   storage.regular(part);
   if (sha256File(part) !== expectedHash)
     throw new Error(`${label} member SHA-256 mismatch at ${url}`);
@@ -416,8 +321,7 @@ async function prepareFixture(storage, fixture) {
   let published = false;
   try {
     storage.check();
-    stage = fs.mkdtempSync(path.join(storage.downloads, `${fixture.fixtureId}-`));
-    storage.rememberDirectory(stage);
+    stage = storage.createTempDirectory(storage.downloads, `${fixture.fixtureId}-`);
     const sourcePath = path.join(stage, 'source');
     await acquire(
       storage,
@@ -428,7 +332,7 @@ async function prepareFixture(storage, fixture) {
       SOURCE_LIMIT,
       'source'
     );
-    storage.move(part, sourcePath);
+    storage.promote(part, sourcePath);
     const referencePart = path.join(storage.downloads, `${fixture.fixtureId}.reference.part`);
     await acquire(
       storage,
@@ -439,7 +343,7 @@ async function prepareFixture(storage, fixture) {
       REFERENCE_LIMIT,
       'reference source'
     );
-    storage.move(referencePart, path.join(stage, 'reference-source'));
+    storage.promote(referencePart, path.join(stage, 'reference-source'));
     const text = deriveReference(
       fs.readFileSync(path.join(stage, 'reference-source'), 'utf8'),
       fixture.acquisition.reference,
@@ -448,12 +352,7 @@ async function prepareFixture(storage, fixture) {
     if (hash(text) !== fixture.referenceSha256)
       throw new Error('derived reference SHA-256 mismatch');
     const referencePath = path.join(stage, 'reference.txt');
-    const fd = storage.create(referencePath);
-    try {
-      fs.writeFileSync(fd, text);
-    } finally {
-      fs.closeSync(fd);
-    }
+    storage.writeExclusive(referencePath, text);
     wavPath = path.join(stage, 'normalized.wav');
     storage.check();
     await execute(
@@ -466,12 +365,11 @@ async function prepareFixture(storage, fixture) {
       { timeout: 60 * 60_000, maxBuffer: 64 * 1024 }
     );
     storage.check();
-    storage.files.set(wavPath, storage.identity(storage.regular(wavPath)));
+    storage.track(wavPath);
     const audio = await verifyWav(storage, wavPath, fixture);
     const destination = path.join(storage.fixtures, path.basename(stage));
     storage.check();
-    fs.renameSync(stage, destination);
-    storage.directories.delete(stage);
+    storage.moveDirectory(stage, destination);
     published = true;
     const prefix = path.relative(storage.layout.corpusRoot, destination);
     return {
@@ -507,15 +405,14 @@ async function prepareFixture(storage, fixture) {
         // a regular, unshared file in this still-verified attempt directory.
         if (wavPath && !storage.files.has(wavPath)) {
           try {
-            storage.files.set(wavPath, storage.identity(storage.regular(wavPath)));
+            storage.track(wavPath);
           } catch (error) {
             if (error.code !== 'ENOENT') throw error;
           }
         }
         for (const target of [...storage.files.keys()]) storage.remove(target);
         if (stage) {
-          fs.rmdirSync(stage);
-          storage.directories.delete(stage);
+          storage.removeDirectory(stage);
         }
       } catch (cleanupError) {
         if (!failure) throw sourceError(fixture, cleanupError.message, cleanupError);
@@ -556,14 +453,8 @@ async function preparePublicCorpus(
     `verified-${cohort}-${crypto.randomUUID()}.json`
   );
   const temporary = `${manifestPath}.part`;
-  const fd = storage.create(temporary);
-  try {
-    fs.writeFileSync(fd, `${JSON.stringify(manifest, null, 2)}\n`);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  storage.move(temporary, manifestPath);
+  storage.writeExclusive(temporary, `${JSON.stringify(manifest, null, 2)}\n`);
+  storage.promote(temporary, manifestPath);
   return { manifest, manifestPath };
 }
 

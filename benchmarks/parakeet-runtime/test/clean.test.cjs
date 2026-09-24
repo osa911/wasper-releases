@@ -74,8 +74,64 @@ def interleave_stat(name, *args, **kwargs):
 
 os.rename = interleave_rename
 os.stat = interleave_stat
-sys.argv = sys.argv[1:]
-runpy.run_path(sys.argv[0], run_name="__main__")
+arguments = sys.argv[1:]
+while arguments and arguments[0] in ('-I', '-S', '-B'):
+    arguments.pop(0)
+target, *target_arguments = arguments
+sys.argv = [target, *target_arguments]
+runpy.run_path(target, run_name="__main__")
+`,
+    { mode: 0o700 }
+  );
+  return executable;
+}
+
+function deletionRacePython(homeDirectory, { entry, replacement }) {
+  const executable = path.join(homeDirectory, `delete-race-${entry}-python`);
+  fs.writeFileSync(
+    executable,
+    `#!/usr/bin/python3
+import os
+import runpy
+import sys
+
+ENTRY = ${JSON.stringify(entry)}
+REPLACEMENT = ${JSON.stringify(replacement)}
+opened = set()
+swapped = False
+original_close = os.close
+original_open = os.open
+
+def open_entry(name, *args, **kwargs):
+    descriptor = original_open(name, *args, **kwargs)
+    if name == ENTRY:
+        opened.add(descriptor)
+    return descriptor
+
+def close_entry(descriptor):
+    global swapped
+    original_close(descriptor)
+    if descriptor not in opened or swapped:
+        return
+    swapped = True
+    root = sys.argv[sys.argv.index('--root') + 1]
+    target = os.path.join(root, ENTRY) if REPLACEMENT == 'directory' else os.path.join(root, 'artifacts', ENTRY)
+    if os.path.lexists(target):
+        os.rename(target, target + '.owned-before-swap')
+    if REPLACEMENT == 'file':
+        with open(target, 'w', encoding='utf-8') as output:
+            output.write('substituted entry')
+    else:
+        os.mkdir(target)
+
+os.open = open_entry
+os.close = close_entry
+arguments = sys.argv[1:]
+while arguments and arguments[0] in ('-I', '-S', '-B'):
+    arguments.pop(0)
+target, *target_arguments = arguments
+sys.argv = [target, *target_arguments]
+runpy.run_path(target, run_name='__main__')
 `,
     { mode: 0o700 }
   );
@@ -136,6 +192,30 @@ test('clean removes only generated roots from a marker-owned cache', async t => 
       .some(name => name.startsWith('.parakeet-runtime-clean-')),
     false
   );
+});
+
+test('clean ignores a PATH-shadowed Python executable', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const bin = path.join(homeDirectory, 'untrusted-bin');
+  const witness = path.join(homeDirectory, 'untrusted-python-ran');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, 'python3'),
+    `#!/bin/sh\nprintf unsafe > ${JSON.stringify(witness)}\nexit 99\n`,
+    { mode: 0o700 }
+  );
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
+  try {
+    await clean(layout);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+
+  assert.equal(fs.existsSync(witness), false);
+  assert.equal(fs.existsSync(layout.artifactsRoot), false);
 });
 
 test('clean preserves an unrelated explicit output root inside the marker-owned cache', async t => {
@@ -245,6 +325,37 @@ test('clean leaves a symlink target outside the cache untouched', async t => {
   assert.equal(fs.existsSync(externalFile), true);
   assert.equal(fs.existsSync(path.join(layout.artifactsRoot, 'generated.txt')), true);
   assert.equal(fs.existsSync(path.join(layout.holdersRoot, 'escape')), true);
+});
+
+test('clean does not unlink a file substituted when its verified descriptor closes', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const pythonExecutable = deletionRacePython(homeDirectory, {
+    entry: 'generated.txt',
+    replacement: 'file',
+  });
+
+  await assert.rejects(clean(layout, { pythonExecutable }), /cleanup|directory/i);
+
+  assert.equal(
+    fs.readFileSync(path.join(layout.artifactsRoot, 'generated.txt'), 'utf8'),
+    'substituted entry'
+  );
+});
+
+test('clean does not rmdir a directory substituted when its verified descriptor closes', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  fs.mkdirSync(layout.artifactsRoot, { recursive: true });
+  const pythonExecutable = deletionRacePython(homeDirectory, {
+    entry: 'artifacts',
+    replacement: 'directory',
+  });
+
+  await clean(layout, { pythonExecutable });
+
+  assert.equal(fs.lstatSync(layout.artifactsRoot).isDirectory(), true);
 });
 
 test('clean rejects a regular file in place of a generated directory', async t => {
