@@ -84,6 +84,12 @@ test('clean removes only generated roots from a marker-owned cache', async t => 
     fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
     true
   );
+  assert.equal(
+    fs
+      .readdirSync(layout.cacheNamespaceRoot)
+      .some(name => name.startsWith('.parakeet-runtime-clean-')),
+    false
+  );
 });
 
 test('clean preserves an unrelated explicit output root inside the marker-owned cache', async t => {
@@ -175,28 +181,81 @@ test('clean cannot follow an interleaved cache-root replacement to external data
   fs.mkdirSync(path.dirname(externalArtifact), { recursive: true });
   fs.writeFileSync(externalArtifact, 'external');
   const displacedCache = path.join(homeDirectory, 'displaced-owned-cache');
-  const originalRm = fs.promises.rm;
   let interleaved = false;
-  fs.promises.rm = async (...argumentsList) => {
-    if (!interleaved) {
-      interleaved = true;
-      if (fs.existsSync(layout.cacheRoot)) fs.renameSync(layout.cacheRoot, displacedCache);
-      fs.symlinkSync(externalRoot, layout.cacheRoot);
-    }
-    return originalRm(...argumentsList);
-  };
 
-  try {
-    await assert.rejects(clean(layout), /cache root was replaced during cleanup/);
-  } finally {
-    fs.promises.rm = originalRm;
-  }
+  await assert.rejects(
+    clean(layout, {
+      beforeRemove() {
+        if (interleaved) return;
+        interleaved = true;
+        if (fs.existsSync(layout.cacheRoot)) fs.renameSync(layout.cacheRoot, displacedCache);
+        fs.symlinkSync(externalRoot, layout.cacheRoot);
+      },
+    }),
+    /cache root was replaced during cleanup/
+  );
 
   assert.equal(fs.readFileSync(externalArtifact, 'utf8'), 'external');
   assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'keep');
   assert.equal(
     fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
     true
+  );
+});
+
+test('clean cannot follow an interleaved quarantine replacement to external data', async t => {
+  const { homeDirectory, layout } = ownedLayout(t);
+  writeOwnershipMarker(layout);
+  writeGeneratedFiles(layout);
+  const retainedFile = path.join(layout.cacheRoot, 'keep.txt');
+  fs.writeFileSync(retainedFile, 'keep');
+
+  const externalRoot = path.join(homeDirectory, 'external-quarantine-replacement');
+  const externalFiles = ['artifacts', 'corpus', 'holders', 'runs'].map(name => {
+    const filePath = path.join(externalRoot, name, 'important.txt');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `external-${name}`);
+    return filePath;
+  });
+  let interleaved = false;
+
+  await assert.rejects(
+    clean(layout, {
+      beforeRemove() {
+        if (interleaved) return;
+        interleaved = true;
+        const quarantineName = fs
+          .readdirSync(layout.cacheNamespaceRoot)
+          .find(name => name.startsWith('.parakeet-runtime-clean-'));
+        assert.notEqual(quarantineName, undefined);
+        const quarantineContainer = path.join(layout.cacheNamespaceRoot, quarantineName);
+        const ownedCache = path.join(quarantineContainer, 'owned-cache');
+        fs.renameSync(ownedCache, path.join(quarantineContainer, 'displaced-owned-cache'));
+        fs.symlinkSync(externalRoot, ownedCache);
+      },
+    })
+  );
+
+  for (const [index, externalFile] of externalFiles.entries()) {
+    assert.equal(
+      fs.readFileSync(externalFile, 'utf8'),
+      `external-${['artifacts', 'corpus', 'holders', 'runs'][index]}`
+    );
+  }
+  const restoredStat = fs.lstatSync(layout.cacheRoot);
+  assert.equal(restoredStat.isDirectory(), true);
+  assert.equal(restoredStat.isSymbolicLink(), false);
+  assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'keep');
+  assert.equal(
+    fs.existsSync(path.join(layout.cacheRoot, '.wasper-parakeet-runtime-benchmark-owner.json')),
+    true
+  );
+  assert.equal(fs.existsSync(path.join(layout.artifactsRoot, 'generated.txt')), true);
+  assert.equal(
+    fs
+      .readdirSync(layout.cacheNamespaceRoot)
+      .some(name => name.startsWith('.parakeet-runtime-clean-')),
+    false
   );
 });
 

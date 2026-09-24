@@ -12,6 +12,7 @@ const requiredPaths = [
   'package-lock.json',
   'bin/benchmark.cjs',
   'src/cli.cjs',
+  'src/delete-owned-cache.py',
   'src/prepare-corpus.cjs',
   'schema/manifest.schema.json',
   'locks/runtimes.json',
