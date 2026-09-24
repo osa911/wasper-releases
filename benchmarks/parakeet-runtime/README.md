@@ -15,10 +15,9 @@ not the historical modified checkout. In addition, two long recordings require
 rights-holder-authorized manual input. The runner and doctor fail closed for
 these conditions.
 
-No frozen 2026-09 result is published in this commit. The available local
-historical envelopes do not provide the reviewed public-projection input, so
-publishing aggregate values from them would require reconstructing private raw
-records. That is intentionally not done.
+No frozen 2026-09 result is published in this commit. See the
+[historical evidence status](results/2026-09-m1-pro/README.md) for why this
+commit contains no historical numeric projection.
 
 ## Requirements
 
