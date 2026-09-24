@@ -21,8 +21,16 @@ function workloadTable(evidence, name, title) {
 ${workloadRows(evidence, name)}`;
 }
 
+function isPartialOrNonComparable(status) {
+  return status?.mode === 'ready-short' || status?.verification === 'partial-non-comparable';
+}
+
 function createPublicReport(evidence) {
   const run = evidence.run ?? {};
+  const status = run.status ?? {};
+  const partialRunWarning = isPartialOrNonComparable(status)
+    ? '\nWarning: This run is partial and non-comparable. Do not compare it with full benchmark results.\n'
+    : '';
   return `# Parakeet runtime benchmark
 
 Run: \`${evidence.runId}\`
@@ -35,6 +43,12 @@ Machine: \`${JSON.stringify(run.hardware ?? {})}\`
 
 Wasper release: \`${JSON.stringify(run.wasperRelease ?? {})}\`
 
+Cohort: \`${format(status.cohort)}\`
+
+Mode: \`${format(status.mode)}\`
+
+Verification: \`${format(status.verification)}\`
+${partialRunWarning}
 Warm-up establishes runtime residency and is discarded. Timed requests measure runtime response only. Long rows with incomplete coverage intentionally omit quality and speed metrics.
 
 ${workloadTable(evidence, 'shortQuality', 'Short quality')}

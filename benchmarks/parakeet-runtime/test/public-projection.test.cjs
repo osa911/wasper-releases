@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const { createPublicReport } = require('../src/runtime/report.cjs');
 const { projectPublicEvidence } = require('../src/runtime/reporting/public-projection.cjs');
 
 function localRunWithText() {
@@ -181,4 +182,59 @@ test('public evidence derives the Wasper release label from the runtime identity
     nativeServerSha256: 'c'.repeat(64),
     baselineKind: 'newer-release',
   });
+});
+
+test('public evidence exposes a privacy-safe ready-short status and warns in the report', () => {
+  const run = localRunWithText();
+  run.runIdentity = {
+    ...run.runIdentity,
+    cohort: 'short',
+    mode: 'ready-short',
+    verification: 'partial-non-comparable',
+    machine: 'review-fixture-host.example',
+    rawTranscript: 'private ready-short transcript',
+  };
+
+  const projection = projectPublicEvidence(run);
+  const report = createPublicReport(projection);
+  const serialized = JSON.stringify({ projection, report });
+
+  assert.deepEqual(projection.run.status, {
+    cohort: 'short',
+    mode: 'ready-short',
+    verification: 'partial-non-comparable',
+  });
+  assert.match(report, /Cohort: `short`/u);
+  assert.match(report, /Mode: `ready-short`/u);
+  assert.match(report, /Verification: `partial-non-comparable`/u);
+  assert.match(
+    report,
+    /Warning: This run is partial and non-comparable\. Do not compare it with full benchmark results\./u
+  );
+  assert.equal(serialized.includes('review-fixture-host.example'), false);
+  assert.equal(serialized.includes('private ready-short transcript'), false);
+  assert.equal(serialized.includes('private transcript'), false);
+});
+
+test('full-run status remains comparable and has no partial-run warning', () => {
+  const run = localRunWithText();
+  run.runIdentity = {
+    ...run.runIdentity,
+    cohort: 'all',
+    mode: 'full',
+    verification: 'full-comparison',
+  };
+
+  const projection = projectPublicEvidence(run);
+  const report = createPublicReport(projection);
+
+  assert.deepEqual(projection.run.status, {
+    cohort: 'all',
+    mode: 'full',
+    verification: 'full-comparison',
+  });
+  assert.match(report, /Cohort: `all`/u);
+  assert.match(report, /Mode: `full`/u);
+  assert.match(report, /Verification: `full-comparison`/u);
+  assert.doesNotMatch(report, /^Warning:/mu);
 });

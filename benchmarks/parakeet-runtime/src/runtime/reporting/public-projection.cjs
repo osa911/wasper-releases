@@ -29,6 +29,11 @@ function projectedIdentity(runIdentity) {
       }
     }
   }
+  const status = {};
+  for (const field of ['cohort', 'mode', 'verification']) {
+    if (typeof source[field] === 'string') status[field] = source[field];
+  }
+  if (Object.keys(status).length > 0) result.status = status;
   return result;
 }
 
