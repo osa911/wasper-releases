@@ -104,10 +104,14 @@ To remove generated benchmark data, run:
 npm run clean
 ```
 
-Cleanup removes only the generated `artifacts`, `corpus`, `holders`, and `runs`
-directories after validating the cache ownership marker and containment. It
-refuses a missing, altered, or unsafe marker and does not delete a repository,
-home directory, or arbitrary custom path.
+Run cleanup only after the benchmark exits and while no other process changes
+the same cache. Cleanup removes only the generated `artifacts`, `corpus`,
+`holders`, and `runs` directories after validating the cache ownership marker
+and containment. It refuses a missing, altered, or unsafe marker and does not
+delete a repository, home directory, or arbitrary custom path. macOS does not
+provide an operation that can delete a previously verified file by identity, so
+`clean` cannot protect against another process running under your macOS account
+that changes the cache after validation.
 
 ## Interpret the results
 
