@@ -4,7 +4,6 @@
 const crypto = require('node:crypto');
 const os = require('node:os');
 
-const { canonicalJson } = require('./asr-quality/manifest.cjs');
 const { resolveLayout } = require('./config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./runtime/constants.cjs');
 
@@ -18,6 +17,7 @@ const MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
 const PUBLIC_RUN_SCHEMA = 'wasper.parakeet-runtime-benchmark.public-run.v1';
 
 function digest(value) {
+  const { canonicalJson } = require('./asr-quality/manifest.cjs');
   return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
 
