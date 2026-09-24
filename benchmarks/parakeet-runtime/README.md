@@ -62,12 +62,12 @@ sources.
 
 ## Plan a full run
 
-The recorded short schedule has 5,103 requests across seven runtimes and three
-passes. It contains 14:10:30 of source audio.
+The complete schedule has 5,544 requests and about 110:29:10 of aggregate
+source audio across the fixed runtimes, passes, and cohorts.
 
-After setup, reserve a half day on a supported Mac. This is a planning estimate,
-not a measured result. It excludes model and source acquisition, manual-input
-delays, blocked locks, and hardware or runtime variation.
+No reliable elapsed-time estimate is published because no complete measured
+result exists for the current public locks and full long cohort. A future valid
+full run will add that measured planning figure.
 
 Reserve 32 GiB of free storage for planning. Doctor enforces a 24 GiB floor.
 The extra 8 GiB is headroom, not an exact cache size. The current ready-runtime
