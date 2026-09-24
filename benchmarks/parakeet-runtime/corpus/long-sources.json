@@ -1,0 +1,719 @@
+{
+  "schema": "wasper.public-corpus-sources.v1",
+  "fixtures": [
+    {
+      "fixtureId": "de-long-mtedx-pr8ssedsli",
+      "language": "de",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_de.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_de.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "2f1e912ecccac95b8079863c5454d76a6677cdb1e9d89020878b9f1572430f2d",
+      "normalizedWavSha256": "a345a7dce2fe917c5ee294c76d7912dbe02bdb75ee1541a665512689b75c42f8",
+      "referenceSha256": "fc29449b55dcb4cc4066844b2da77256c71af5076feca89ad72cf71bc60d9fbe",
+      "durationSeconds": 550.5219375,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "85ba1be12f1fe91d1e14f0c33b29c3b8ca93d0214218ef4f046969c157d87f59",
+          "member": "de-de/data/test/wav/pR_8SsedSLI.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "85ba1be12f1fe91d1e14f0c33b29c3b8ca93d0214218ef4f046969c157d87f59",
+          "member": "de-de/data/test/vtt/pR_8SsedSLI.de.vtt",
+          "sha256": "610f9f008f7a9246787240065baa7b08c8656e23c762aaad0949ee74d34eae56",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "6f737c76ee5fd682fe1033d6114e634fe29631e8c8676ff502c002f3465a2bbb",
+              "occurrences": 1
+            },
+            {
+              "sha256": "23c4578151ee2e3822c3e5409bb5861b43719ec6e2f36011ff567c9f2ca30692",
+              "occurrences": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "de-long-mtedx-uholdwx4h3m",
+      "language": "de",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_de.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_de.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "22a1feeb962a5b7f7cf16f8b577a98c7f81b0c08ad4767667bb243457cd8c932",
+      "normalizedWavSha256": "f77feabfba0e60912932bcce565b45dbc94784321335451521eec15613999e3b",
+      "referenceSha256": "76f7266fe696c4eff640ec2c46da4e68b62d4dde41b3bb1a664730f3f53f2f91",
+      "durationSeconds": 328.771375,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "85ba1be12f1fe91d1e14f0c33b29c3b8ca93d0214218ef4f046969c157d87f59",
+          "member": "de-de/data/test/wav/UhOlDWx4h3M.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "85ba1be12f1fe91d1e14f0c33b29c3b8ca93d0214218ef4f046969c157d87f59",
+          "member": "de-de/data/test/vtt/UhOlDWx4h3M.de.vtt",
+          "sha256": "b40467f93aab3712793bc39379f8c5cd87257d2d0ca0cb616e06ba66029ce7ba",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "673c269904c1d2f4d734392be6c3e19974fffc9da01261b00fd7ff2da665b82c",
+              "occurrences": 2
+            },
+            {
+              "sha256": "c65e4463fa9eeaa2ebc991cfb0960cb593a9664a8b2e2889c472ff93567d7014",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "de-long-mtedx-whcvaxglcu",
+      "language": "de",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_de.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_de.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "7eba3434e351157200f3a43c8dc59abc0aee8f747adffd0a5825500075f6b3c8",
+      "normalizedWavSha256": "a7ba4806d6f54f545472927ebd17353e2fd62edeb60ff482621d0eff29769105",
+      "referenceSha256": "3c672e52e87582e6f4d1ed9bd6700575878523cbc4df465cd22150d5729c3ae9",
+      "durationSeconds": 1178.110875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "85ba1be12f1fe91d1e14f0c33b29c3b8ca93d0214218ef4f046969c157d87f59",
+          "member": "de-de/data/test/wav/WhcvAXG-lcU.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "85ba1be12f1fe91d1e14f0c33b29c3b8ca93d0214218ef4f046969c157d87f59",
+          "member": "de-de/data/test/vtt/WhcvAXG-lcU.de.vtt",
+          "sha256": "91de7efddb9ca9b648057cfc747abb3e0f124b6b5d0f40cdcb9a24496f3b1155",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "b2caedcefca5230303f2051e359f547304a001e4785a3be8061aef6c2f9f5fbe",
+              "occurrences": 8
+            },
+            {
+              "sha256": "c65e4463fa9eeaa2ebc991cfb0960cb593a9664a8b2e2889c472ff93567d7014",
+              "occurrences": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "el-long-mtedx-62znby3rhii",
+      "language": "el",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_el.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_el.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "d1ae1fa7e1dc96a63e71e8a1319c7ba9c192fc99115f97059a96d77c69e353a3",
+      "normalizedWavSha256": "e530a68a8592fc31dc57e171722d5520d0d80b7f658f8ac85d44cb97e5eed13e",
+      "referenceSha256": "0f1703bda6d18ec0076c316fe06d19cb5fd0ca42d3af1b303325267adfcf421c",
+      "durationSeconds": 534.5814375,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "18e6126f84a9d5e79196ae19c69d922c6935c6e1ce65b2695c85d09e955dd259",
+          "member": "el-el/data/test/wav/62zNBY3RhII.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "18e6126f84a9d5e79196ae19c69d922c6935c6e1ce65b2695c85d09e955dd259",
+          "member": "el-el/data/test/vtt/62zNBY3RhII.el.vtt",
+          "sha256": "024830d1a84cf10c072fe1bacd934b689033941997461c7a4bc668c17037a325",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "b8afef1095ca44242e77ffc1b4b10efdf028540835f0afcb313846c595035d3d",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "el-long-mtedx-7p0i1lsukmo",
+      "language": "el",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_el.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_el.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "219451bd3dd08a8a719d56f3cf114bc5bfc65a50639560ccc7524c405596a315",
+      "normalizedWavSha256": "c6067a31959c39e6b34b0a51cdd610a86d5747172bc518af47cc234798011be9",
+      "referenceSha256": "0ef41702d748b0362289667eca97602f91bd879f30f7e61092f49a9f4ec3e3f7",
+      "durationSeconds": 984.502875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "18e6126f84a9d5e79196ae19c69d922c6935c6e1ce65b2695c85d09e955dd259",
+          "member": "el-el/data/test/wav/7p0i1LsUkMo.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "18e6126f84a9d5e79196ae19c69d922c6935c6e1ce65b2695c85d09e955dd259",
+          "member": "el-el/data/test/vtt/7p0i1LsUkMo.el.vtt",
+          "sha256": "15699602d357cdfb7c285bb9283c2cf8569f95735d8443b9722de08aa8c63af5",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "b8afef1095ca44242e77ffc1b4b10efdf028540835f0afcb313846c595035d3d",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "el-long-mtedx-91jfbwkv42y",
+      "language": "el",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_el.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_el.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "c5efa36dc1692e3a3165a9bcecea82d958567d8abff0ff9012196f59f16baf89",
+      "normalizedWavSha256": "f5257899269435c9af4b52287e250b95b0f38cf10ea820b61d14cb169ac0bb3f",
+      "referenceSha256": "9f32144925bcb99592220c90c31690552c6d82886d7c840cb3fd4cc04093dc7b",
+      "durationSeconds": 1524.691875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "18e6126f84a9d5e79196ae19c69d922c6935c6e1ce65b2695c85d09e955dd259",
+          "member": "el-el/data/test/wav/91JfbWkv42Y.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "18e6126f84a9d5e79196ae19c69d922c6935c6e1ce65b2695c85d09e955dd259",
+          "member": "el-el/data/test/vtt/91JfbWkv42Y.el.vtt",
+          "sha256": "d7cccc1b1d95ec6bdc91d4b19ed68407b429501a6b0e72d980187bf23f54c3c1",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "9366d9594a8163d2681abad0a84e7bf597d13b4c74f6a5bfeb07347b427ba711",
+              "occurrences": 1
+            },
+            {
+              "sha256": "c7c081a0e02a64b5da0952cf4bd20dd8a21da27461b43922c99e55fa62970ea1",
+              "occurrences": 7
+            },
+            {
+              "sha256": "b8afef1095ca44242e77ffc1b4b10efdf028540835f0afcb313846c595035d3d",
+              "occurrences": 7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "en-long-white-house-20090115-17",
+      "language": "en",
+      "cohort": "long",
+      "sourceUrl": "https://georgewbush-whitehouse.archives.gov/news/releases/2009/01/20090115-17.pod.a.mp3",
+      "referenceUrl": null,
+      "licenseUrl": "https://www.copyright.gov/title17/title17.pdf",
+      "attribution": "President George W. Bush; Office of the Press Secretary, White House; President Bush Delivers Farewell Address to the Nation, January 15, 2009; preserved by the U.S. National Archives and Records Administration. U.S. Government work.",
+      "sourceSha256": "748a8439751ae53887232d31fb7719516b4a7523dd96e8b7477c3c680466462d",
+      "normalizedWavSha256": "39930078cd20083fc946320b777d75a56b41c0d4406d03ed5fed5934aedc1994",
+      "referenceSha256": "d4d1395438325da7e26d964950cd9fa1d2d637648d49273e56b6920e6bb76499",
+      "durationSeconds": 818.468625,
+      "acquisition": {
+        "state": "manual-authorized-input-required",
+        "reason": "No official public locator is available for the exact hash-bound 20090115-17-text.pdf. The official HTML transcript is not a substitute.",
+        "referenceSourceSha256": "563421bf32fb3cdbcd2e08da2330a6980da3f9675a8c14e67cd7d4322434da13",
+        "referenceAdapter": "white-house-pdf-v1"
+      }
+    },
+    {
+      "fixtureId": "es-long-mtedx-9va26uzpqya",
+      "language": "es",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_es.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_es.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "84c7e6d93ff6bd210c8aa8a1d059e59661f77f3bbbb8343d6ba975cb320b5f04",
+      "normalizedWavSha256": "ac9882bd89b3678c84a95a99b6d7a0e057163aa9aec38800693740fafba435dd",
+      "referenceSha256": "ccf57824b28d634dcfe27f75970b40b8126d78f4cb8d38cad8f8068fa6287a0e",
+      "durationSeconds": 347.9278125,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "56ac04e8387d895ace4c6c805b3c20a792b68c109f454bf1fd43b11f792520c1",
+          "member": "es-es/data/test/wav/9VA26uZPqYA.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "56ac04e8387d895ace4c6c805b3c20a792b68c109f454bf1fd43b11f792520c1",
+          "member": "es-es/data/test/vtt/9VA26uZPqYA.es.vtt",
+          "sha256": "bae14496acb944c10f945ee5f7780e24df6a76f3944f20e1fb624c5b20d96f0d",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": []
+        }
+      }
+    },
+    {
+      "fixtureId": "es-long-mtedx-hlijkmy3vy8",
+      "language": "es",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_es.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_es.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "df3eafdeb3b881f3b042eb987e6e9513433368048e8d3e6f10a53f3506baf592",
+      "normalizedWavSha256": "9628dd5ebbccf41e435e531db558ea0ed94e3fb4002735f26416bbfff0ec278e",
+      "referenceSha256": "7660c5266ad762e855b96a8e62f7549f1a8407a64e9c5979d070f18a8f44b30b",
+      "durationSeconds": 1351.616875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "56ac04e8387d895ace4c6c805b3c20a792b68c109f454bf1fd43b11f792520c1",
+          "member": "es-es/data/test/wav/HLIJkmy3vy8.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "56ac04e8387d895ace4c6c805b3c20a792b68c109f454bf1fd43b11f792520c1",
+          "member": "es-es/data/test/vtt/HLIJkmy3vy8.es.vtt",
+          "sha256": "3e26104d673e66b9dc5269e1d43d8be61bbf4215f1c115bed2c25a744fab9429",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "9626780af07359fdfec77fd3219a982049e3618996449daa80a7617b13b8ed80",
+              "occurrences": 7
+            },
+            {
+              "sha256": "a46799a2707a67e2dd831c52037be02cc57902fee0c0c2437cc8755312c3e104",
+              "occurrences": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "es-long-mtedx-jej8qlzlagw",
+      "language": "es",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_es.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_es.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "8b1220e256cb8b845be23268b8d0a40cf39e06e993d6e06c48201f861af30b2d",
+      "normalizedWavSha256": "7330101c1d7712d3e46b948d60127edd94c69ab9b7fe72d108c017e95299fe2a",
+      "referenceSha256": "db0216da7c774eb557c1e4ee47f021954f14bcd59814521288faa2369df42d8e",
+      "durationSeconds": 639.3730625,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "56ac04e8387d895ace4c6c805b3c20a792b68c109f454bf1fd43b11f792520c1",
+          "member": "es-es/data/test/wav/jej8qlzlAGw.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "56ac04e8387d895ace4c6c805b3c20a792b68c109f454bf1fd43b11f792520c1",
+          "member": "es-es/data/test/vtt/jej8qlzlAGw.es.vtt",
+          "sha256": "1070aa3a12db81f7ac2c7b3d801d3c3a10b7aaba9a8b45c69ec73e77471e2b56",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "dd7b7529534b71b0d5eae0261dcb4c971a1f0e534785cec4051023d42633d02a",
+              "occurrences": 1
+            },
+            {
+              "sha256": "a46799a2707a67e2dd831c52037be02cc57902fee0c0c2437cc8755312c3e104",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "fr-long-mtedx-16pe5tkzuxg",
+      "language": "fr",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_fr.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_fr.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "a20000dd337de687f0d0f2e63356c74ec6c5cdda650b91d47760936ad1b08dae",
+      "normalizedWavSha256": "7a866aae9a812b0b9850fd51058657c1d9fe4fdd9b17c7dd3b0ea9a74f2b155d",
+      "referenceSha256": "f1e8fff6303b7635e0131696692e63b6d661f5be8c097c766f8cdd592e0c0689",
+      "durationSeconds": 531.81825,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "d887af9d25ea5a37b14d107a5940db15a0ba636909fc419ae6bb0d1a3a3657ee",
+          "member": "fr-fr/data/test/wav/16pE5tKZuxg.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "d887af9d25ea5a37b14d107a5940db15a0ba636909fc419ae6bb0d1a3a3657ee",
+          "member": "fr-fr/data/test/vtt/16pE5tKZuxg.fr.vtt",
+          "sha256": "d198ea6931751e2c7ce5132c542f010e39ec192ec479a647aeb4ba0223ebae5f",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "9ceb00588569f61300e9658865bd0462f18e0d363cd68c13e73383ec7520b3d8",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "fr-long-mtedx-n5pq6o9rizq",
+      "language": "fr",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_fr.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_fr.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "811ff98e89b5fe4bd13a61de93424a60419a10f79719a90e2e5463996c131591",
+      "normalizedWavSha256": "7805a6e178b26bf2112aa4b5edbd5a2cd7481b7fed19594a4a9c69a12b8327e4",
+      "referenceSha256": "5fa023f2d904398e225fd61e565c799f6b2f2d5dd9ff771de834a8bf9472a56a",
+      "durationSeconds": 1166.767875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "d887af9d25ea5a37b14d107a5940db15a0ba636909fc419ae6bb0d1a3a3657ee",
+          "member": "fr-fr/data/test/wav/n5Pq6o9rIZQ.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "d887af9d25ea5a37b14d107a5940db15a0ba636909fc419ae6bb0d1a3a3657ee",
+          "member": "fr-fr/data/test/vtt/n5Pq6o9rIZQ.fr.vtt",
+          "sha256": "3055f4196bbeefc7c0c1de885e941ecac9124ffcc542cb2b8d3d3a3bc9147827",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "9ceb00588569f61300e9658865bd0462f18e0d363cd68c13e73383ec7520b3d8",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "fr-long-mtedx-ttcrwojao30",
+      "language": "fr",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_fr.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_fr.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "2db80156384ebf8dc95fec91073f1c01ab0235df28b9afa7ea5d9dac81085191",
+      "normalizedWavSha256": "78a2505005494b6189243e6f5808b468504a1830f40badd02369aa904c24adfa",
+      "referenceSha256": "1866332afd6aaeb8c46795349e06cdef288fcf505c80c90036d0a5289192408e",
+      "durationSeconds": 741.8775625,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "d887af9d25ea5a37b14d107a5940db15a0ba636909fc419ae6bb0d1a3a3657ee",
+          "member": "fr-fr/data/test/wav/tTcrwOjAo30.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "d887af9d25ea5a37b14d107a5940db15a0ba636909fc419ae6bb0d1a3a3657ee",
+          "member": "fr-fr/data/test/vtt/tTcrwOjAo30.fr.vtt",
+          "sha256": "33b48fea1b24d92a196c502eb83541a3252188ce2683c90407185fed452048c5",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "ca972c596d63720d59a7804e8f6ad2a7361e1930ca377e594567b4e20ba32a19",
+              "occurrences": 5
+            },
+            {
+              "sha256": "9ceb00588569f61300e9658865bd0462f18e0d363cd68c13e73383ec7520b3d8",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "it-long-mtedx-rjy6mzugihq",
+      "language": "it",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_it.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_it.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "fb9b20edde8ca2016aea066bf068d91dfb867b4ab6c2f145f3154c87ba6bc46c",
+      "normalizedWavSha256": "804854002b1b9df721c35627d26983cbafeae04d4bbf2743cb49538cba13690e",
+      "referenceSha256": "8e53e8d1bd833703da2fee4c75d5e5c7494b517a309617920a9379b692e92f21",
+      "durationSeconds": 946.7704375,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "453411ddbac7437c062cf99a9a91520897cdb850ca58c321c1fbf3e87e41baac",
+          "member": "it-it/data/test/wav/RjY6MZUGiHQ.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "453411ddbac7437c062cf99a9a91520897cdb850ca58c321c1fbf3e87e41baac",
+          "member": "it-it/data/test/vtt/RjY6MZUGiHQ.it.vtt",
+          "sha256": "0a43dbacade5cfeab5c6d0d750f80e6700676c978ba88d064781e10d9492dab6",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "9e6226a704c89e76ad4f526d5c96ce03afe3f37851a4fb2635d49c64428af704",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "it-long-mtedx-tpj2ljf16s8",
+      "language": "it",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_it.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_it.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "4ad59668c6541a7146d794a40aab917b3bca1bd6a0b8b80776844cdae62b4b75",
+      "normalizedWavSha256": "e107c4610ac7c48aa527c221426f6d0262ff3a02faadbc6e28eb0346e81e6124",
+      "referenceSha256": "d68037adc9ca28cfdaf32dc0879cdfac85c7410e8f6d26350d20c2793580b840",
+      "durationSeconds": 590.344125,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "453411ddbac7437c062cf99a9a91520897cdb850ca58c321c1fbf3e87e41baac",
+          "member": "it-it/data/test/wav/TpJ2LjF16s8.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "453411ddbac7437c062cf99a9a91520897cdb850ca58c321c1fbf3e87e41baac",
+          "member": "it-it/data/test/vtt/TpJ2LjF16s8.it.vtt",
+          "sha256": "33615656d059484d12ec996881064aa9d1ca020a0048c2776b3b692e05c30380",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "1d72b4163fd42ba8f63fa26988d0b032df4f7eb16d2d200d437b4d4eff20fefd",
+              "occurrences": 1
+            },
+            {
+              "sha256": "9e6226a704c89e76ad4f526d5c96ce03afe3f37851a4fb2635d49c64428af704",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "it-long-mtedx-zlj5srro7p4",
+      "language": "it",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_it.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_it.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "ebf42835ec7af4e386998609ba55e8eea1f21c28d38957ac1dad889bbb720172",
+      "normalizedWavSha256": "cd6bf87f40e0968ed53c86dbc59f1a601d23e39e82110de683fa0e228f862361",
+      "referenceSha256": "e90d06e9c824882e50bf2f92cca051420451a66048cad0c1cccb6e7674b23543",
+      "durationSeconds": 1045.159875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "453411ddbac7437c062cf99a9a91520897cdb850ca58c321c1fbf3e87e41baac",
+          "member": "it-it/data/test/wav/zlj5sRro7P4.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "453411ddbac7437c062cf99a9a91520897cdb850ca58c321c1fbf3e87e41baac",
+          "member": "it-it/data/test/vtt/zlj5sRro7P4.it.vtt",
+          "sha256": "74880942c770a00cd7768e602cb2edb96cacd95ff90b01074fa40be9e288129b",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": []
+        }
+      }
+    },
+    {
+      "fixtureId": "nl-long-royal-household-2015",
+      "language": "nl",
+      "cohort": "long",
+      "sourceUrl": "https://www.rovid.nl/kh/ckh/2015/kh-ckh-20151225-idp0552r8-web-hd.mp4",
+      "referenceUrl": "https://www.rovid.nl/kh/ckh/2015/kh-ckh-20151225-idp0552r8-ondertiteling.srt",
+      "licenseUrl": "https://www.koninklijkhuis.nl/service/copyright",
+      "attribution": "King Willem-Alexander; Royal Household of the Netherlands; Kersttoespraak 2015. The publisher notice grants CC0 for text but does not grant general reuse of this media.",
+      "sourceSha256": "d97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56",
+      "normalizedWavSha256": "e3582ab2743991e4fa824a31d3fd61966a32cd0e1ac00efbe594af2ea1fbe092",
+      "referenceSha256": "dbfd40ec7811d1ff44872129a9648f47eaf11562c2e783cc86e85180bfdb667f",
+      "durationSeconds": 386.0636875,
+      "acquisition": {
+        "state": "manual-authorized-input-required",
+        "reason": "The publisher does not grant media reuse for this item. Separate authority is required for the exact historical input.",
+        "integrityConflict": {
+          "reason": "The frozen and registry source hashes disagree. The current MP4 locator is unverified against the frozen source identity.",
+          "frozenSourceSha256": "d97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56",
+          "registrySourceSha256": "d83bad35177a6ff32f5cbca4d78d72952ccaf50bef3536281f987caadde59d40",
+          "sourceLocatorStatus": "unverified-against-frozen-identity"
+        },
+        "referenceSourceSha256": "3d5546911b48c1ed2a62da9806ee79df6a21ae2dc9ff74591816c9ff509b5e5a",
+        "referenceAdapter": "royal-srt-v1"
+      }
+    },
+    {
+      "fixtureId": "pl-long-wolne-lektury-cien-z-obozu",
+      "language": "pl",
+      "cohort": "long",
+      "sourceUrl": "https://wolnelektury.pl/media/book/mp3/baczynski-poematy-cien-z-obozu.mp3",
+      "referenceUrl": "https://wolnelektury.pl/media/book/txt/baczynski-poematy-cien-z-obozu.txt",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "attribution": "Krzysztof Kamil Baczyński, Cień z obozu; read by Robert Koszucki; directed by Rafał Poławski; Wolne Lektury. CC BY-SA 4.0. Audio normalized to 16 kHz mono PCM; reference whitespace and publisher footer processed for local evaluation. Distributed adaptations must retain CC BY-SA 4.0.",
+      "sourceSha256": "564af4fb8f4b34a7c7407754a4b8dbf95d7a08bdcdcfd8f15604a58c0344600c",
+      "normalizedWavSha256": "624b5bc684341e6fec1838ea4bcbd838174b479d8b24eca749f7a07d2273d754",
+      "referenceSha256": "18e255cc1f874db44ec0a52a8039cfb36ef0e4110a6ea4e8f7ad9ef9431a7ddc",
+      "durationSeconds": 513.7951875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "direct"
+        },
+        "reference": {
+          "kind": "direct",
+          "sha256": "9e6d89b1b5fd958b1d90d7c7b04cd19cec32a4ada589682dc3ef606e67aacdad",
+          "adapter": "wolne-lektury-txt-v1"
+        }
+      }
+    },
+    {
+      "fixtureId": "pt-long-mtedx-2epizvun3y",
+      "language": "pt",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_pt.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_pt.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "a495be60750b3956725f5ad5dd844a9a28f1ddb82eae47a0197e7453e79ef472",
+      "normalizedWavSha256": "bb98afeb16cba20828b38f0cd23dffa2cc81d48808be58a9643fb8a31eb0d88d",
+      "referenceSha256": "16990bcd064b93834ddd8e389dd4955950580cfd38dbee12270df8af7471c26f",
+      "durationSeconds": 434.74725,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "be343a8d3d359ebbb9dd6116458ca76d34e0e8e7aac2706a0f52b057c3290074",
+          "member": "pt-pt/data/test/wav/2EpIZVU-N3Y.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "be343a8d3d359ebbb9dd6116458ca76d34e0e8e7aac2706a0f52b057c3290074",
+          "member": "pt-pt/data/test/vtt/2EpIZVU-N3Y.pt.vtt",
+          "sha256": "4a4fd8814af315207aa728362f49956539ea4a4ef7cd88aa00b8f51fa5c56344",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "a46799a2707a67e2dd831c52037be02cc57902fee0c0c2437cc8755312c3e104",
+              "occurrences": 2
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "pt-long-mtedx-fbrc0svwu4",
+      "language": "pt",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_pt.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_pt.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "718c7421c18fe716122f3571f24f8371eab155336953a8bc7ce19e81a42ac955",
+      "normalizedWavSha256": "7cd7cb938e1fdd04fcf455678d601b2864559fe3857534c775a4a614bcdcbde4",
+      "referenceSha256": "5011ea56a498b76b8d837a0d3f40ae5f95b94339e1781fba645b2ffadd88cc3a",
+      "durationSeconds": 1076.8021875,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "be343a8d3d359ebbb9dd6116458ca76d34e0e8e7aac2706a0f52b057c3290074",
+          "member": "pt-pt/data/test/wav/fbRc0svwu-4.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "be343a8d3d359ebbb9dd6116458ca76d34e0e8e7aac2706a0f52b057c3290074",
+          "member": "pt-pt/data/test/vtt/fbRc0svwu-4.pt.vtt",
+          "sha256": "fe229142f37a40eb61008232f23d4e6149440407b63ca1a52e1e29434147ec87",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "a46799a2707a67e2dd831c52037be02cc57902fee0c0c2437cc8755312c3e104",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "fixtureId": "pt-long-mtedx-rmz5rfzwvrc",
+      "language": "pt",
+      "cohort": "long",
+      "sourceUrl": "https://www.openslr.org/resources/100/mtedx_pt.tgz",
+      "referenceUrl": "https://www.openslr.org/resources/100/mtedx_pt.tgz",
+      "licenseUrl": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "attribution": "Elizabeth Salesky, Matthew Wiesner, Jacob Bremerman, Roldano Cattoni, Matteo Negri, Marco Turchi, Douglas W. Oard, and Matt Post. The Multilingual TEDx Corpus for Speech Recognition and Translation. Interspeech 2021. mTEDx v1.0 / OpenSLR SLR100. CC BY-NC-ND 4.0; attribution required, noncommercial use only, no redistribution of altered material. Source terms must be explicitly accepted.",
+      "sourceSha256": "1314e70aa2938684df762bfc8e65af2107a84b73fe24c8e9cd876752ba59db9a",
+      "normalizedWavSha256": "43b63b4b625dc0591b0c9148a688d1bfbf280de77a9189664649c3e462720fc0",
+      "referenceSha256": "594b704d255538181c4ad709276958c51c1082ecec75d8471a3ca65ac107fb69",
+      "durationSeconds": 817.760375,
+      "acquisition": {
+        "state": "automatic",
+        "audio": {
+          "kind": "tar-member",
+          "archiveSha256": "be343a8d3d359ebbb9dd6116458ca76d34e0e8e7aac2706a0f52b057c3290074",
+          "member": "pt-pt/data/test/wav/Rmz5rFzwVrc.flac"
+        },
+        "reference": {
+          "kind": "tar-member",
+          "archiveSha256": "be343a8d3d359ebbb9dd6116458ca76d34e0e8e7aac2706a0f52b057c3290074",
+          "member": "pt-pt/data/test/vtt/Rmz5rFzwVrc.pt.vtt",
+          "sha256": "2e81a8e8dbfaba91dfe1191eb71cbf5a6ba4d7fe268ea54047cb36b94ce46d30",
+          "adapter": "mtedx-vtt-v1",
+          "excludedCues": [
+            {
+              "sha256": "a46799a2707a67e2dd831c52037be02cc57902fee0c0c2437cc8755312c3e104",
+              "occurrences": 2
+            },
+            {
+              "sha256": "b9dc87cae7bd07b42ad03bcee8508f6b09ce6d2cbd4d756b310e53d8cadda05e",
+              "occurrences": 1
+            },
+            {
+              "sha256": "8e0e55bcfb1bd1fc6d1663621868a4b4681ae11af3f76173a28d492b97a41a96",
+              "occurrences": 1
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
