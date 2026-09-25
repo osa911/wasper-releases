@@ -10,6 +10,7 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { promisify, isDeepStrictEqual } = require('node:util');
 const { loadRuntimeLock, runtimeFromLock } = require('./locks.cjs');
+const { materializeLocalMlxInt8 } = require('./mlx-local-int8.cjs');
 const { ownedRuntimeStorage } = require('./owned-runtime-storage.cjs');
 const { isInside } = require('../config.cjs');
 
@@ -32,6 +33,10 @@ function runtimeArtifacts(runtime) {
       withRedirectHosts({ ...dependency, path: `.binary-dependencies/${dependency.sha256}.zip` })
     ),
   ];
+}
+
+function installationArtifacts(runtime) {
+  return [...runtimeArtifacts(runtime), ...(runtime.conversion?.outputs ?? [])];
 }
 
 function processEnvironment(storage) {
@@ -336,7 +341,7 @@ function buildInventory(runtime, holderRoot, storage) {
 }
 
 function verifyPackageBridges(runtime, layout) {
-  for (const entry of runtime.bridgeFiles ?? []) {
+  for (const entry of [...(runtime.bridgeFiles ?? []), ...(runtime.conversion ? [runtime.conversion.script] : [])]) {
     const file = path.join(layout.packageRoot, entry.path);
     const info = fs.lstatSync(file);
     if (
@@ -429,6 +434,7 @@ async function buildSwift(runtime, holderRoot, storage, python, env, tools, depe
       ...common,
       '--force-resolved-versions',
       '--disable-dependency-cache',
+      '--disable-keychain',
       '--manifest-cache',
       'local',
       '--configuration',
@@ -526,6 +532,26 @@ async function bootstrapRuntime(
           env
         )
       );
+    if (runtime.conversion) {
+      const base = await bootstrapRuntime(
+        runtime.conversion.baseRuntimeId,
+        { layout, lock, python },
+        dependencies
+      );
+      artifacts.push(
+        ...(await materializeLocalMlxInt8({
+          conversion: runtime.conversion,
+          baseArtifactRoot: base.artifactRoot,
+          artifactRoot,
+          holderRoot,
+          storage,
+          python,
+          env,
+          script: path.join(layout.packageRoot, runtime.conversion.script.path),
+          executeConversion: dependencies.executeLocalMlxInt8Conversion,
+        }))
+      );
+    }
     if (runtime.source)
       await clone(
         runtime.source,
@@ -621,7 +647,7 @@ function verifyRuntimeInstallation(
   const holderRoot = path.join(layout.holdersRoot, runtimeId);
   storage.directory(artifactRoot, false);
   const allowed = new Set([
-    ...runtimeArtifacts(runtime).map(artifact => artifact.path),
+    ...installationArtifacts(runtime).map(artifact => artifact.path),
     '.bootstrap.json',
   ]);
   const walk = directory => {
@@ -638,7 +664,7 @@ function verifyRuntimeInstallation(
     }
   };
   walk(artifactRoot);
-  for (const artifact of runtimeArtifacts(runtime)) {
+  for (const artifact of installationArtifacts(runtime)) {
     const actual = storage.hashFile(path.join(artifactRoot, artifact.path));
     if (
       actual.sha256 !== artifact.sha256 ||

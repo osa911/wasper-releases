@@ -71,22 +71,20 @@ and tool executables. Production callers use the two-argument interface.
 Tests exercise real local HTTP, Git, CMake, and Swift operations without
 downloading models.
 
-CLI acquisition orchestration and public result projection belong to later
-extraction tasks. This task provides the runtime interfaces and activation
-gate; it does not claim that the complete public CLI benchmark is ready.
+The public CLI orchestrates acquisition and result projection. A complete
+full run still requires the two manually authorized long recordings.
 
 ## Reproduction limitations
 
-Local MLX INT8 is blocked before acquisition and activation. Its historical
-`bits=8`, `group_size=64` settings do not establish a complete public conversion
-recipe or a verifiable output hash. Its base model is pinned through the MLX
-F32 entry. The lock carries no private derivative or invented output identity.
+Local MLX INT8 is generated from the pinned MLX Community model with the
+checked-in converter. Its generated output hashes are verified before use.
 
-Fluid Core ML is also blocked. At the pinned model revision, the model card
-frontmatter declares `cc-by-4.0`, while the License section says `Apache 2.0`.
-Both statements remain recorded in the lock. No source-terms flag resolves
-this conflict. The bridge uses a clean public FluidAudio commit and a matching
-`Package.resolved`. It does not reproduce a modified historical checkout.
+Fluid Core ML uses the pinned public FluidAudio source and model. At the pinned
+model revision, the model card frontmatter declares `cc-by-4.0`, while the
+License section says `Apache 2.0`.
+Both statements remain recorded in the lock. The bridge uses a clean public
+FluidAudio commit and a matching `Package.resolved`. This differs from the
+modified checkout used in historical measurements.
 [Pinned Fluid model card](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/blob/7dd20fe6b1797d35f5e3307e8b1732d9a178edfe/README.md).
 
 The remaining entries pin publicly retrievable inputs and the published

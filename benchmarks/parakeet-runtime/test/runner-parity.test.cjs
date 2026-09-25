@@ -418,7 +418,7 @@ test('smoke bootstraps only ready runtimes against the automatic short corpus', 
   assert.equal(result.verification, 'partial-non-comparable');
 });
 
-test('full mode still reaches blocked runtime state before corpus recovery', async t => {
+test('full mode bootstraps every runtime before corpus recovery', async t => {
   const layout = temporaryLayout(t);
   const bootstrapped = [];
   let recovered = false;
@@ -429,15 +429,23 @@ test('full mode still reaches blocked runtime state before corpus recovery', asy
       loadRuntimeLockImpl: loadRuntimeLock,
       async bootstrapRuntimeImpl(runtimeId) {
         bootstrapped.push(runtimeId);
-        if (runtimeId === 'mlx-int8-local') throw new Error('blocked runtime');
       },
       async recoverCorpusImpl() {
         recovered = true;
+        throw new Error('manual long sources required');
       },
     }),
-    /blocked runtime/
+    /manual long sources required/
   );
 
-  assert.deepEqual(bootstrapped, ['wasper-metal-int8', 'mlx-fp32', 'mlx-int8-local']);
-  assert.equal(recovered, false);
+  assert.deepEqual(bootstrapped, [
+    'wasper-metal-int8',
+    'mlx-fp32',
+    'mlx-int8-local',
+    'handy-gguf-q8',
+    'nvidia-gguf-q8',
+    'istupakov-onnx-int8',
+    'fluid-coreml-mixed',
+  ]);
+  assert.equal(recovered, true);
 });

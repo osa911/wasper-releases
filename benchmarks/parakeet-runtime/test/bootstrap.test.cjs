@@ -69,17 +69,74 @@ function configureArchiveRuntime(fixture, archive) {
   });
 }
 
-test('blocks Local MLX INT8 and Fluid before creating a cache or fetching inputs', async t => {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-bootstrap-')));
+function pinnedArtifact(pathname, body) {
+  const bytes = Buffer.from(body);
+  return {
+    path: pathname,
+    url: `https://huggingface.co/fixture/model/resolve/${'a'.repeat(40)}/${pathname}`,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    sizeBytes: bytes.length,
+    bytes,
+  };
+}
+
+test('bootstraps Local MLX INT8 from its locked FP32 base and reuses verified output', async t => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-mlx-bootstrap-')));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const layout = resolveLayout({ homeDirectory: home });
-  for (const id of ['mlx-int8-local', 'fluid-coreml-mixed']) {
-    await assert.rejects(
-      bootstrapRuntime(id, { layout, lock: loadRuntimeLock() }),
-      /blocked.*(conversion|license)/i
-    );
-    assert.equal(fs.existsSync(layout.cacheRoot), false);
-  }
+  const lock = structuredClone(loadRuntimeLock());
+  const base = lock.runtimes.find(runtime => runtime.id === 'mlx-fp32');
+  const local = lock.runtimes.find(runtime => runtime.id === 'mlx-int8-local');
+  const baseFiles = [
+    pinnedArtifact('config.json', '{"base":true}\n'),
+    pinnedArtifact('model.safetensors', 'fp32-weights\n'),
+    pinnedArtifact('vocab.txt', 'vocabulary\n'),
+  ];
+  const expectedFiles = [
+    pinnedArtifact('config.json', '{"quantization":{"bits":8,"group_size":64}}\n'),
+    pinnedArtifact('model.safetensors', 'int8-weights\n'),
+    pinnedArtifact('vocab.txt', 'vocabulary\n'),
+  ];
+  base.pythonPackages = [];
+  base.artifacts = baseFiles.map(({ bytes: _bytes, ...artifact }) => artifact);
+  local.pythonPackages = [];
+  local.conversion.outputs = expectedFiles.map(({ bytes: _bytes, ...artifact }) => artifact);
+  const downloads = new Map(baseFiles.map(artifact => [artifact.url, artifact.bytes]));
+  const conversions = [];
+  const dependencies = {
+    authority: lock,
+    async fetchImpl(url) {
+      const body = downloads.get(url);
+      assert.ok(body, `unexpected download ${url}`);
+      return { status: 200, ok: true, body: Readable.from([body]) };
+    },
+    async executeLocalMlxInt8Conversion(request) {
+      conversions.push(request);
+      for (const artifact of expectedFiles) {
+        fs.writeFileSync(path.join(request.stageRoot, artifact.path), artifact.bytes);
+      }
+    },
+  };
+
+  const first = await bootstrapRuntime(
+    'mlx-int8-local',
+    { layout, lock, python: '/usr/bin/python3' },
+    dependencies
+  );
+
+  assert.equal(conversions.length, 1);
+  assert.equal(conversions[0].baseArtifactRoot, path.join(layout.artifactsRoot, 'mlx-fp32'));
+  assert.deepEqual(
+    first.artifacts.sort(),
+    expectedFiles.map(artifact => path.join(layout.artifactsRoot, 'mlx-int8-local', artifact.path)).sort()
+  );
+  assert.deepEqual(
+    fs.readdirSync(first.artifactRoot).sort(),
+    ['.bootstrap.json', ...expectedFiles.map(artifact => artifact.path)].sort()
+  );
+
+  await bootstrapRuntime('mlx-int8-local', { layout, lock, python: '/usr/bin/python3' }, dependencies);
+  assert.equal(conversions.length, 1);
 });
 
 test('clones the pinned Git source, verifies HTTP bytes and builds only inside owned roots', async t => {
@@ -564,13 +621,24 @@ test('builds a pinned Swift bridge only after verifying its locked binary depend
       sha256: binarySha256,
     },
   ];
+  const swiftTool = path.join(fixture.root, 'swift-with-public-artifact-check');
+  fs.writeFileSync(
+    swiftTool,
+    '#!/bin/sh\nif [ "$1" = "build" ]; then\n  case " $* " in *" --disable-keychain "*) ;; *) echo "public Swift artifact build must disable keychain" >&2; exit 64;; esac\nfi\nexec /usr/bin/swift "$@"\n',
+    { mode: 0o755 }
+  );
+  const swiftDependencies = {
+    ...fixture.dependencies,
+    bridgeRoot: bridge,
+    tools: { swift: swiftTool },
+  };
   fixture.runtime.artifactRedirectHosts['github.com'] = ['github.com'];
   fixture.state.responses.set('/dependency', Buffer.from('altered dependency bytes'));
   await assert.rejects(
     bootstrapRuntime(
       'handy-gguf-q8',
       { layout: fixture.layout, lock: fixture.authority },
-      { ...fixture.dependencies, bridgeRoot: bridge }
+      swiftDependencies
     ),
     /SHA-256/
   );
@@ -583,7 +651,7 @@ test('builds a pinned Swift bridge only after verifying its locked binary depend
   const ready = await bootstrapRuntime(
     'handy-gguf-q8',
     { layout: fixture.layout, lock: fixture.authority },
-    { ...fixture.dependencies, bridgeRoot: bridge }
+    swiftDependencies
   );
   assert.equal(
     execFileSync(ready.outputs[0], { encoding: 'utf8' }).trim(),

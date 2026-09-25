@@ -15,7 +15,7 @@ const LAYOUT_OPTIONS = new Map([
 ]);
 const MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
 const PUBLIC_RUN_SCHEMA = 'wasper.parakeet-runtime-benchmark.public-run.v1';
-const READY_SHORT_RUNTIME_COUNT = 5;
+const READY_SHORT_RUNTIME_COUNT = 7;
 const READY_SHORT_VERIFICATION = 'partial-non-comparable';
 
 function digest(value) {

@@ -88,7 +88,9 @@ function resolveLockedDefinition(runtimeId, options = {}) {
     modelArtifacts:
       runtimeId === 'wasper-metal-int8'
         ? [modelPath]
-        : entry.artifacts.map(artifact => path.join(artifactRoot, artifact.path)),
+        : (entry.conversion?.outputs ?? entry.artifacts).map(artifact =>
+            path.join(artifactRoot, artifact.path)
+          ),
     modelIdentity: `${entry.model.url}@${entry.model.revision}`,
     quantization: entry.quantization,
     runtime: entry.runtime,

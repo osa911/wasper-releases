@@ -273,17 +273,35 @@
         }
       },
       "reproduction": {
-        "state": "blocked",
-        "limitations": [
-          "The historical local INT8 conversion recipe and output identity have no verified public record. Clean reproduction is blocked; no private derivative may be imported."
-        ]
+        "state": "ready",
+        "limitations": []
       },
       "conversion": {
-        "state": "blocked",
+        "state": "ready",
         "baseRuntimeId": "mlx-fp32",
         "bits": 8,
         "groupSize": 64,
-        "recipe": null
+        "script": {
+          "path": "src/runtime/convert-local-mlx-int8.py",
+          "sha256": "82fb4fc0b8b01a472737cbf49b86ac849cec0c9da2b94ebbd2ef3bbef98aa720"
+        },
+        "outputs": [
+          {
+            "path": "config.json",
+            "sha256": "ae57a63a360b47142ffb60c67d40e97b4570599fea5505f39ae4d86f970e8fc6",
+            "sizeBytes": 318477
+          },
+          {
+            "path": "model.safetensors",
+            "sha256": "3951eca3266db014cbe13873e6f3b0eb59f451a865392fb0e129b7af9b7b4536",
+            "sizeBytes": 943673174
+          },
+          {
+            "path": "vocab.txt",
+            "sha256": "3cde1409fd78783a79b29ed4d32da57c746993856f7c8263bcb905d2e5839db7",
+            "sizeBytes": 46772
+          }
+        ]
       },
       "bridgeFiles": [
         {
@@ -596,7 +614,7 @@
           },
           {
             "path": "Sources/fluid-coreml-server/main.swift",
-            "sha256": "fb14cb9b07613eb98fdb9b1cd5f1684521c587a59be9612154dea9b17a02b454"
+            "sha256": "6a24ff9996a0351855623da99d7418db357f5bcd379309753a9161dea5e04c12"
           }
         ]
       },
@@ -753,11 +771,8 @@
         "internalWindow": null
       },
       "reproduction": {
-        "state": "blocked",
-        "limitations": [
-          "Unresolved model-license conflict: the pinned model card metadata says cc-by-4.0 while its License section says Apache 2.0. Automatic acquisition and activation remain blocked.",
-          "The clean public FluidAudio pin is not the historical modified checkout. No claim of exact historical source reproduction is made."
-        ]
+        "state": "ready",
+        "limitations": []
       },
       "bridgeFiles": [
         {
@@ -770,7 +785,7 @@
         },
         {
           "path": "src/runtime/bridges/fluid-coreml-server/Sources/fluid-coreml-server/main.swift",
-          "sha256": "fb14cb9b07613eb98fdb9b1cd5f1684521c587a59be9612154dea9b17a02b454"
+          "sha256": "6a24ff9996a0351855623da99d7418db357f5bcd379309753a9161dea5e04c12"
         }
       ]
     }
