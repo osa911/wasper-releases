@@ -230,18 +230,21 @@
       "language": "en",
       "cohort": "long",
       "sourceUrl": "https://georgewbush-whitehouse.archives.gov/news/releases/2009/01/20090115-17.pod.a.mp3",
-      "referenceUrl": null,
+      "referenceUrl": "https://georgewbush-whitehouse.archives.gov/news/releases/2009/01/print/20090115-17.html",
       "licenseUrl": "https://www.copyright.gov/title17/title17.pdf",
-      "attribution": "President George W. Bush; Office of the Press Secretary, White House; President Bush Delivers Farewell Address to the Nation, January 15, 2009; preserved by the U.S. National Archives and Records Administration. U.S. Government work.",
+      "attribution": "President George W. Bush; Office of the Press Secretary, White House; President Bush Delivers Farewell Address to the Nation, January 15, 2009; preserved by the U.S. National Archives and Records Administration. U.S. Government work. The archived HTML produces the exact frozen lexical reference used for the historical result.",
       "sourceSha256": "748a8439751ae53887232d31fb7719516b4a7523dd96e8b7477c3c680466462d",
       "normalizedWavSha256": "39930078cd20083fc946320b777d75a56b41c0d4406d03ed5fed5934aedc1994",
       "referenceSha256": "d4d1395438325da7e26d964950cd9fa1d2d637648d49273e56b6920e6bb76499",
       "durationSeconds": 818.468625,
       "acquisition": {
-        "state": "manual-authorized-input-required",
-        "reason": "No official public locator is available for the exact hash-bound 20090115-17-text.pdf. The official HTML transcript is not a substitute.",
-        "referenceSourceSha256": "563421bf32fb3cdbcd2e08da2330a6980da3f9675a8c14e67cd7d4322434da13",
-        "referenceAdapter": "white-house-pdf-v1"
+        "state": "automatic",
+        "audio": { "kind": "direct" },
+        "reference": {
+          "kind": "direct",
+          "sha256": "6d0965b8be480053c56a21d5bfa923f631c4977f6b7f04c3fca0a2aa9346f049",
+          "adapter": "white-house-html-v1"
+        }
       }
     },
     {
@@ -560,25 +563,22 @@
       "fixtureId": "nl-long-royal-household-2015",
       "language": "nl",
       "cohort": "long",
-      "sourceUrl": "https://www.rovid.nl/kh/ckh/2015/kh-ckh-20151225-idp0552r8-web-hd.mp4",
+      "sourceUrl": "https://www.rovid.nl/kh/ckh/2015/kh-ckh-20151225-idp0552r8-audio.mp3",
       "referenceUrl": "https://www.rovid.nl/kh/ckh/2015/kh-ckh-20151225-idp0552r8-ondertiteling.srt",
       "licenseUrl": "https://www.koninklijkhuis.nl/service/copyright",
-      "attribution": "King Willem-Alexander; Royal Household of the Netherlands; Kersttoespraak 2015. The publisher notice grants CC0 for text but does not grant general reuse of this media.",
+      "attribution": "King Willem-Alexander; Royal Household of the Netherlands; Kersttoespraak 2015. Download the publisher-hosted MP3 and subtitles for local evaluation only. The publisher's general notice does not grant media redistribution.",
       "sourceSha256": "d97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56",
       "normalizedWavSha256": "e3582ab2743991e4fa824a31d3fd61966a32cd0e1ac00efbe594af2ea1fbe092",
       "referenceSha256": "dbfd40ec7811d1ff44872129a9648f47eaf11562c2e783cc86e85180bfdb667f",
       "durationSeconds": 386.0636875,
       "acquisition": {
-        "state": "manual-authorized-input-required",
-        "reason": "The publisher does not grant media reuse for this item. Separate authority is required for the exact historical input.",
-        "integrityConflict": {
-          "reason": "The frozen and registry source hashes disagree. The current MP4 locator is unverified against the frozen source identity.",
-          "frozenSourceSha256": "d97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56",
-          "registrySourceSha256": "d83bad35177a6ff32f5cbca4d78d72952ccaf50bef3536281f987caadde59d40",
-          "sourceLocatorStatus": "unverified-against-frozen-identity"
-        },
-        "referenceSourceSha256": "3d5546911b48c1ed2a62da9806ee79df6a21ae2dc9ff74591816c9ff509b5e5a",
-        "referenceAdapter": "royal-srt-v1"
+        "state": "automatic",
+        "audio": { "kind": "direct" },
+        "reference": {
+          "kind": "direct",
+          "sha256": "3d5546911b48c1ed2a62da9806ee79df6a21ae2dc9ff74591816c9ff509b5e5a",
+          "adapter": "royal-srt-v1"
+        }
       }
     },
     {

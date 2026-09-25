@@ -14,6 +14,8 @@ const {
 } = require('../../asr-quality/audio-cache.cjs');
 const {
   deriveMtedxReference,
+  deriveRoyalSrtReference,
+  deriveWhiteHouseReference,
   deriveWolneLekturyReference,
   timedTextBlocks,
 } = require('../../asr-quality/long-corpus-preparation.cjs');
@@ -340,6 +342,10 @@ function deriveReference(source, acquisition, fixture) {
     }
     case 'wolne-lektury-txt-v1':
       return deriveWolneLekturyReference(source);
+    case 'white-house-html-v1':
+      return deriveWhiteHouseReference(source);
+    case 'royal-srt-v1':
+      return deriveRoyalSrtReference(source);
     default:
       throw new Error('unsupported reference adapter');
   }

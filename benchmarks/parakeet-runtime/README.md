@@ -11,8 +11,9 @@ All seven runtime locks are ready for public acquisition. `Local MLX INT8` is
 derived from the exact pinned public MLX Community model and its generated
 artifact hashes are verified. `Fluid Core ML` uses the pinned public FluidAudio
 source and Core ML model. This source differs from the modified checkout used
-for historical measurements. Two long recordings still require
-rights-holder-authorized manual input before a complete full run.
+for historical measurements. All 21 long recordings have public download
+links. The English and Dutch audio, normalized WAVs, and lexical references
+were recovered with hashes matching the original benchmark fixtures.
 
 No frozen 2026-09 result is published in this commit. See the
 [historical evidence status](results/2026-09-m1-pro/README.md) for why this
@@ -59,8 +60,7 @@ download long recordings or require source-terms acceptance.
 download a model, or fetch a corpus. It prints the hardware, Darwin platform
 and kernel release, Node version, available disk, cache and output locations,
 Wasper classification, and a state for every runtime. It exits nonzero when a
-prerequisite invalidates a full run; that is expected at this commit because of
-the long-source blockers. Doctor checks the exact `python3`
+prerequisite invalidates a full run. Doctor checks the exact `python3`
 used by bootstrap, both FFmpeg tools needed to recover audio, every package pin
 required by a ready runtime, and `swift` because the checked-in lock includes a
 Swift runtime. It prints a command for each missing prerequisite and never runs
@@ -108,10 +108,10 @@ npm run benchmark -- ready-short
 
 This mode fetches all seven runtime locks and recovers only the
 automatic short cohort. Its output is labelled `partial-non-comparable`. Do
-not treat its metrics as the historical full comparison, and do not infer
-anything about manual long inputs from it.
+not treat its metrics as the historical full comparison or infer long-recording
+performance from it.
 
-The eventual full-run command is:
+Run the full 243-short, 21-long corpus with:
 
 ```sh
 npm run benchmark -- full --accept-source-terms
@@ -119,9 +119,12 @@ npm run benchmark -- full --accept-source-terms
 
 `--accept-source-terms` acknowledges the terms and licenses recorded in the
 corpus manifests before any long-source download. Read those terms first. The
-flag does not authorize reuse beyond a source's license, and it does not bypass
-the two manual-authorized inputs. Do not substitute recordings, references, or
-transcripts for those inputs: a partial long cohort is not a full-run result.
+flag does not authorize reuse beyond a source's license. The Dutch recording
+and subtitles come from the Royal Household's own download links. The
+publisher does not grant general media redistribution. The benchmark keeps
+downloaded media in the local cache and does not include it in this repository.
+Do not substitute recordings, references, or transcripts: the pinned hashes
+identify the corpus used for the published website results.
 
 By default, generated artifacts are kept only in the marker-owned cache:
 
@@ -191,10 +194,12 @@ family.
 | Istupakov ONNX INT8 | [model](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx); [onnx-asr](https://pypi.org/project/onnx-asr/0.12.0/); [onnxruntime](https://pypi.org/project/onnxruntime/1.30.0/) | Ready |
 | Fluid Core ML | [model](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml); [FluidAudio](https://github.com/FluidInference/FluidAudio) | Ready: pinned public source and model |
 
-The short corpus contains 243 automatically recoverable entries. Of the 21
-long entries, 19 have automatic public sources and two require
-rights-holder-authorized manual input. The manifests record source URLs, terms,
-licenses, hashes, and acquisition state:
+The short corpus contains 243 automatically recoverable entries. All 21 long
+entries have automatic public sources. The [archived White House audio and
+transcript](https://georgewbush-whitehouse.archives.gov/news/releases/2009/01/print/20090115-17.html)
+and the [Royal Household's audio and subtitle downloads](https://www.koninklijkhuis.nl/documenten/videos/2015/12/25/kersttoespraak-2015)
+produce the exact frozen source, normalized audio, and lexical-reference
+hashes. The manifests record source URLs, terms, licenses, and hashes:
 
 - [`corpus/short-fleurs.json`](corpus/short-fleurs.json)
 - [`corpus/long-sources.json`](corpus/long-sources.json)

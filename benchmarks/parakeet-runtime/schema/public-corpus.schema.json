@@ -144,7 +144,7 @@
                           "pattern": "^[a-f0-9]{64}$"
                         },
                         "adapter": {
-                          "enum": ["text-v1", "wolne-lektury-txt-v1"]
+                          "enum": ["text-v1", "wolne-lektury-txt-v1", "white-house-html-v1", "royal-srt-v1"]
                         }
                       }
                     },
