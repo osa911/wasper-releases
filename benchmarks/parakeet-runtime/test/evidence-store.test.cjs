@@ -56,3 +56,25 @@ test('private evidence writes stay in the pinned run directory after a parent re
   assert.deepEqual(fs.readdirSync(outside), ['sentinel']);
   assert.equal(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8'), 'unchanged');
 });
+
+test('an interrupted request write does not publish an empty record', t => {
+  const { layout } = temporaryLayout(t);
+  const store = createEvidenceStore({
+    layout,
+    runIdentity: { schema: 'test.evidence-store.v1' },
+    clock: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+  const requestPath = path.join(store.runDirectory, 'requests', '00000000.json');
+  const spawnSync = childProcess.spawnSync;
+  t.mock.method(childProcess, 'spawnSync', function (command, args, options) {
+    if (args[3]?.endsWith('owned-write.py') && args.at(-1)?.includes('00000000')) {
+      fs.writeFileSync(path.join(store.runDirectory, 'requests', args.at(-1)), '');
+      return { status: 1, signal: null, error: null, stderr: 'simulated interrupted write' };
+    }
+    return spawnSync.call(this, command, args, options);
+  });
+
+  assert.throws(() => store.writeRequest({ order: 0, outcome: 'ok' }), /simulated interrupted write/);
+  assert.equal(fs.existsSync(requestPath), false);
+  assert.deepEqual(store.readRequests(), []);
+});

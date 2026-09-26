@@ -138,12 +138,18 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
       const filePath = requestPath(record?.order);
       if (fs.existsSync(filePath)) return;
       storage.directory(requestsDirectory);
+      const temporaryPath = path.join(
+        requestsDirectory,
+        `.${path.basename(filePath)}.${crypto.randomUUID()}.tmp`
+      );
       try {
         storage.writeExclusive(
-          filePath,
+          temporaryPath,
           `${JSON.stringify(cloneJson(record, 'request record'), null, 2)}\n`
         );
+        storage.promote(temporaryPath, filePath);
       } catch (error) {
+        if (storage.files.has(temporaryPath)) storage.remove(temporaryPath);
         if (/File exists/u.test(error.message)) return;
         throw error;
       }

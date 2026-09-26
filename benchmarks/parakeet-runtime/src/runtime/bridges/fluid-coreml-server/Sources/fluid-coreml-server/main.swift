@@ -2,7 +2,7 @@ import CoreML
 import FluidAudio
 import Foundation
 
-let fluidCoreMLBridgeVersion = "2"
+let fluidCoreMLBridgeVersion = "3"
 let fluidAudioSourceHead = "69e42dae8ed12a08c9bd6741080dae741d309a09"
 let fluidAudioSourceVersion = "FluidAudio HEAD \(fluidAudioSourceHead) clean"
 
@@ -70,7 +70,7 @@ struct FluidCoreMLServer {
         configuration.computeUnits = .cpuAndNeuralEngine
         let models = try await AsrModels.load(from: modelDirectory, configuration: configuration, version: .v3)
         let manager = AsrManager(config: .default)
-        try await manager.initialize(models: models)
+        try await manager.loadModels(models)
 
         while let line = readLine() {
             do {
@@ -84,7 +84,9 @@ struct FluidCoreMLServer {
                             NSLocalizedDescriptionKey: "audioPath is required"
                         ])
                     }
-                    let result = try await manager.transcribe(URL(fileURLWithPath: audioPath))
+                    var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+                    let result = try await manager.transcribe(
+                        URL(fileURLWithPath: audioPath), decoderState: &decoderState)
                     writeResponse(Response(requestId: request.requestId, text: result.text))
                 case "stop":
                     writeResponse(Response(requestId: request.requestId, status: "stopping"))

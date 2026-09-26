@@ -117,6 +117,50 @@ async function fixtureServer(t, cohort = 'short') {
   };
 }
 
+test('an archived HTML transcript recovers the frozen English lexical reference', async t => {
+  const f = await fixtureServer(t, 'long');
+  const html = Buffer.from('<p>THE PRESIDENT: Fellow citizens: We will succeed. Thank you. (Applause.)</p>');
+  const expected = 'Fellow citizens: We will succeed. Thank you.';
+  f.routes.set('/reference.txt', html);
+  f.fixture.referenceSha256 = hash(expected);
+  f.fixture.acquisition.reference = {
+    kind: 'direct',
+    sha256: hash(html),
+    adapter: 'white-house-html-v1',
+  };
+
+  const { manifest } = await f.prepare({ acceptSourceTerms: true });
+  assert.equal(manifest.fixtures.length, 1);
+  assert.equal(manifest.fixtures[0].reference.sha256, hash(expected));
+});
+
+test('publisher subtitles recover the frozen Dutch lexical reference', async t => {
+  const f = await fixtureServer(t, 'long');
+  const srt = Buffer.from(
+    Array.from({ length: 88 }, (_, index) => {
+      const minute = String(Math.floor(index / 60)).padStart(2, '0');
+      const second = String(index % 60).padStart(2, '0');
+      const nextMinute = String(Math.floor((index + 1) / 60)).padStart(2, '0');
+      const nextSecond = String((index + 1) % 60).padStart(2, '0');
+      return `${index + 1}\n00:${minute}:${second},000 --> 00:${nextMinute}:${nextSecond},000\nwoord`;
+    }).join('\n\n')
+  );
+  const expected = `${'woord '.repeat(87)}woord`;
+  f.routes.set('/reference.txt', srt);
+  f.fixture.language = 'nl';
+  f.fixture.fixtureId = 'nl-long-synthetic';
+  f.fixture.referenceSha256 = hash(expected);
+  f.fixture.acquisition.reference = {
+    kind: 'direct',
+    sha256: hash(srt),
+    adapter: 'royal-srt-v1',
+  };
+
+  const { manifest } = await f.prepare({ acceptSourceTerms: true });
+  assert.equal(manifest.fixtures.length, 1);
+  assert.equal(manifest.fixtures[0].reference.sha256, hash(expected));
+});
+
 async function failAfterFfmpegOutput(f, { replaceWithSymlink = false } = {}) {
   const realFfmpeg = execFileSync('which', ['ffmpeg'], { encoding: 'utf8' }).trim();
   const bin = path.join(f.root, 'failure-bin');
@@ -321,6 +365,94 @@ test('downloads a short fixture without accepting long-source terms and publishe
   );
 });
 
+test('uses a hash-matched local audio source without requesting that source', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'local-audio');
+  const fixtureDir = path.join(audioDir, f.fixture.fixtureId);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'source'), f.audio);
+
+  const { manifest } = await f.prepare({ audioDir });
+
+  assert.deepEqual(f.requests, ['/reference.txt']);
+  assert.equal(manifest.fixtures[0].source.sha256, hash(f.audio));
+  assert.equal(
+    hash(fs.readFileSync(path.join(f.layout.corpusRoot, manifest.fixtures[0].normalizedAudio.path))),
+    f.fixture.normalizedWavSha256
+  );
+});
+
+test('rejects a wrong local audio source without requesting a replacement', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'local-audio');
+  const fixtureDir = path.join(audioDir, f.fixture.fixtureId);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'source'), 'wrong audio');
+
+  await assert.rejects(f.prepare({ audioDir }), /local audio.*SHA-256 mismatch/i);
+  assert.deepEqual(f.requests, []);
+});
+
+test('reuses a prepared fixture without downloading or normalizing it again', async t => {
+  const f = await fixtureServer(t);
+  const first = await f.prepare();
+  f.requests.length = 0;
+  f.routes.clear();
+
+  const second = await f.prepare();
+
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(second.manifest.fixtures, first.manifest.fixtures);
+  assert.equal(
+    second.manifest.fixtures[0].normalizedAudio.path,
+    `fixtures/${f.fixture.fixtureId}/normalized.wav`
+  );
+});
+
+test('reuses a verified fixture from the older temporary-name cache layout', async t => {
+  const f = await fixtureServer(t);
+  const first = await f.prepare();
+  const original = path.join(f.layout.corpusRoot, 'fixtures', f.fixture.fixtureId);
+  const legacy = `${original}-0123456789abcdef0123456789abcdef`;
+  fs.renameSync(original, legacy);
+  f.requests.length = 0;
+  f.routes.clear();
+
+  const second = await f.prepare();
+
+  assert.deepEqual(f.requests, []);
+  assert.equal(
+    second.manifest.fixtures[0].normalizedAudio.path,
+    `fixtures/${f.fixture.fixtureId}-0123456789abcdef0123456789abcdef/normalized.wav`
+  );
+  assert.notEqual(
+    second.manifest.fixtures[0].normalizedAudio.path,
+    first.manifest.fixtures[0].normalizedAudio.path
+  );
+});
+
+test('a wrong prepared WAV fails rather than being used or replaced', async t => {
+  const f = await fixtureServer(t);
+  const first = await f.prepare();
+  const wavPath = path.join(f.layout.corpusRoot, first.manifest.fixtures[0].normalizedAudio.path);
+  fs.writeFileSync(wavPath, 'damaged');
+  f.requests.length = 0;
+
+  await assert.rejects(f.prepare(), /cached|normalized WAV SHA-256 mismatch/i);
+  assert.deepEqual(f.requests, []);
+  assert.equal(fs.readFileSync(wavPath, 'utf8'), 'damaged');
+});
+
+test('a missing local source falls back to the public download', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'local-audio');
+  fs.mkdirSync(audioDir);
+
+  await f.prepare({ audioDir });
+
+  assert.deepEqual(f.requests, ['/audio.wav', '/reference.txt']);
+});
+
 test('does not request a long source until terms are explicitly accepted', async t => {
   const f = await fixtureServer(t, 'long');
   for (const acceptSourceTerms of [undefined, false, 'true', 1]) {
@@ -350,20 +482,20 @@ test('a missing reference URL rejects before fetching source audio', async t => 
   assert.equal(f.requests.length, 0);
 });
 
-test('the public manifests preserve all frozen fixtures and name blocked acquisitions', () => {
+test('the public manifests preserve all frozen fixtures with automatic acquisition', () => {
   const short = require('../corpus/short-fleurs.json');
   const long = require('../corpus/long-sources.json');
   assert.equal(short.fixtures.length, 243);
   assert.equal(long.fixtures.length, 21);
   assert.equal(new Set([...short.fixtures, ...long.fixtures].map(f => f.fixtureId)).size, 264);
-  const blocked = long.fixtures.filter(
-    f => f.acquisition.state === 'manual-authorized-input-required'
-  );
-  assert.deepEqual(
-    blocked.map(f => f.fixtureId),
-    ['en-long-white-house-20090115-17', 'nl-long-royal-household-2015']
-  );
-  assert.equal(blocked[0].referenceUrl, null);
+  assert.ok(long.fixtures.every(f => f.acquisition.state === 'automatic'));
+  const english = long.fixtures.find(f => f.language === 'en');
+  const dutch = long.fixtures.find(f => f.language === 'nl');
+  assert.equal(english.acquisition.reference.adapter, 'white-house-html-v1');
+  assert.equal(english.referenceSha256, 'd4d1395438325da7e26d964950cd9fa1d2d637648d49273e56b6920e6bb76499');
+  assert.equal(dutch.sourceUrl, 'https://www.rovid.nl/kh/ckh/2015/kh-ckh-20151225-idp0552r8-audio.mp3');
+  assert.equal(dutch.sourceSha256, 'd97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56');
+  assert.equal(dutch.acquisition.reference.adapter, 'royal-srt-v1');
   assert.equal(
     long.fixtures.filter(f => f.acquisition.audio?.kind === 'tar-member').length,
     18
@@ -436,48 +568,32 @@ test('manual input states fail closed before any request and name every blocked 
   assert.equal(fs.existsSync(f.layout.cacheRoot), false);
 });
 
-test('the Dutch public record and acquisition error expose integrity conflict separately from media rights', async t => {
-  const f = await fixtureServer(t, 'long');
+test('the Dutch public record uses the original MP3 and matching subtitle source', () => {
   const dutch = require('../corpus/long-sources.json').fixtures.find(
     fixture => fixture.fixtureId === 'nl-long-royal-household-2015'
   );
   const frozen = 'd97bd43812ff17da6954f46ed273c63fa10f8d2c9a4274205ef223a44b570c56';
-  const registry = 'd83bad35177a6ff32f5cbca4d78d72952ccaf50bef3536281f987caadde59d40';
   assert.equal(dutch.sourceSha256, frozen);
-  assert.equal(dutch.acquisition.state, 'manual-authorized-input-required');
-  assert.match(dutch.acquisition.reason, /media reuse/);
-  assert.equal(dutch.acquisition.integrityConflict?.frozenSourceSha256, frozen);
-  assert.equal(dutch.acquisition.integrityConflict.registrySourceSha256, registry);
-  assert.equal(
-    dutch.acquisition.integrityConflict.sourceLocatorStatus,
-    'unverified-against-frozen-identity'
-  );
-  assert.match(dutch.acquisition.integrityConflict.reason, /source.*hash.*disagree/i);
-  assert.match(dutch.acquisition.integrityConflict.reason, /MP4.*unverified/);
-  await assert.rejects(
-    preparePublicCorpus({ layout: f.layout, cohort: 'long', acceptSourceTerms: true }),
-    error => {
-      assert.ok(error.message.includes(dutch.fixtureId));
-      assert.ok(error.message.includes(dutch.sourceUrl));
-      assert.ok(error.message.includes(dutch.acquisition.reason));
-      assert.match(error.message, /integrity-conflict/);
-      assert.ok(error.message.includes(frozen));
-      assert.ok(error.message.includes(registry));
-      assert.match(error.message, /unverified-against-frozen-identity/);
-      return true;
-    }
-  );
-  assert.equal(fs.existsSync(f.layout.cacheRoot), false);
-  assert.equal(f.requests.length, 0);
+  assert.equal(dutch.acquisition.state, 'automatic');
+  assert.equal(dutch.acquisition.audio.kind, 'direct');
+  assert.equal(dutch.acquisition.reference.sha256, '3d5546911b48c1ed2a62da9806ee79df6a21ae2dc9ff74591816c9ff509b5e5a');
 });
 
-test('integrity conflicts validate both hashes and remain exclusive to blocked acquisition', async t => {
+test('synthetic integrity conflicts validate both hashes and remain exclusive to blocked acquisition', async t => {
   const f = await fixtureServer(t, 'long');
-  const dutch = require('../corpus/long-sources.json').fixtures.find(
-    fixture => fixture.fixtureId === 'nl-long-royal-household-2015'
-  );
+  const conflicted = structuredClone(f.fixture);
+  conflicted.acquisition = {
+    state: 'manual-authorized-input-required',
+    reason: 'The source identity is unresolved.',
+    integrityConflict: {
+      reason: 'The downloaded bytes differ from the frozen source.',
+      frozenSourceSha256: f.fixture.sourceSha256,
+      registrySourceSha256: '0'.repeat(64),
+      sourceLocatorStatus: 'unverified-against-frozen-identity',
+    },
+  };
   const fixtures = f.sourceManifests[0].fixtures;
-  fixtures[0] = structuredClone(dutch);
+  fixtures[0] = structuredClone(conflicted);
   await assert.rejects(f.prepare({ acceptSourceTerms: true }), /integrity-conflict/);
   for (const mutate of [
     fixture => {
@@ -499,7 +615,7 @@ test('integrity conflicts validate both hashes and remain exclusive to blocked a
       fixture.acquisition.state = 'automatic';
     },
   ]) {
-    fixtures[0] = structuredClone(dutch);
+    fixtures[0] = structuredClone(conflicted);
     mutate(fixtures[0]);
     await assert.rejects(
       f.prepare({ acceptSourceTerms: true }),
@@ -703,14 +819,29 @@ test('the CLI routes public corpus preparation and source acceptance through the
   assert.equal(f.requests.length, 2);
 });
 
-test('the real public recovery entry rejects blocked historical sources without private dependencies', async t => {
-  const f = await fixtureServer(t, 'long');
-  const { recoverCorpus } = require('../src/runtime/corpus-recovery.cjs');
-  await assert.rejects(
-    recoverCorpus({ layout: f.layout, cohort: 'long', acceptSourceTerms: true }),
-    /manual-authorized-input-required.*20090115-17-text.pdf/
+test('the CLI accepts an audio directory and skips an available local source', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'audio-inputs');
+  const fixtureDir = path.join(audioDir, f.fixture.fixtureId);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'source'), f.audio);
+  const { runCli } = require('../src/cli.cjs');
+
+  const result = await runCli(
+    [
+      'recover-corpus', '--cohort', 'short', '--cache-dir', f.layout.cacheRoot,
+      '--audio-dir', audioDir,
+    ],
+    {
+      homeDirectory: f.root,
+      stdout: { write() {} },
+      recoverCorpusImpl: options =>
+        preparePublicCorpus(options, { sourceManifests: f.sourceManifests }),
+    }
   );
-  assert.equal(fs.existsSync(f.layout.cacheRoot), false);
+
+  assert.ok(result.manifestPath.startsWith(f.layout.corpusRoot));
+  assert.deepEqual(f.requests, ['/reference.txt']);
 });
 
 test('a cache directory replaced during HTTP transfer leaves the external target intact and names the fixture', async t => {

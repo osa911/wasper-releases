@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DEFAULT_APPLICATIONS_DIRECTORY = '/Applications';
-const MINIMUM_WASPER_VERSION = Object.freeze([1, 8, 0]);
+const MINIMUM_WASPER_VERSION = Object.freeze([1, 5, 0]);
+const PUBLISHED_BASELINE_VERSION = Object.freeze([1, 8, 0]);
 const NATIVE_SERVER_RELATIVE_PATH = 'Contents/Resources/bin/wasper-parakeet-server';
 const RUNTIME_LOCK_PATH = path.resolve(__dirname, '../../locks/runtimes.json');
 
@@ -105,7 +106,7 @@ function discoverWasperApp(options = {}) {
   const minimumComparison = compareVersions(versionParts, MINIMUM_WASPER_VERSION);
   if (minimumComparison < 0) {
     throw new Error(
-      `public Parakeet benchmarking requires Wasper 1.8.0 or later; found ${version}`
+      `public Parakeet benchmarking requires Wasper 1.5.0 or later; found ${version}`
     );
   }
 
@@ -127,19 +128,31 @@ function discoverWasperApp(options = {}) {
   }
 
   let baselineKind;
-  if (compareVersions(versionParts, MINIMUM_WASPER_VERSION) === 0) {
+  const localBuildCommit =
+    options.localBuildCommit ?? process.env.WASPER_BENCHMARK_LOCAL_BUILD_COMMIT;
+  if (localBuildCommit !== undefined) {
+    if (!/^[a-f0-9]{7}([a-f0-9]{33})?$/u.test(localBuildCommit)) {
+      throw new Error('local build commit must be a 7- or 40-character Git SHA');
+    }
+    const buildInfoPath = path.join(appPath, 'Contents/Resources/build-info.json');
+    const buildInfo = JSON.parse(fs.readFileSync(buildInfoPath, 'utf8'));
+    if (buildInfo.dirty !== false || buildInfo.variant !== 'production') {
+      throw new Error('local build must be clean and production');
+    }
+    if (buildInfo.commit !== localBuildCommit.slice(0, 7)) {
+      throw new Error('local build commit does not match installed Wasper.app');
+    }
+    baselineKind = 'local-build';
+  } else if (compareVersions(versionParts, PUBLISHED_BASELINE_VERSION) === 0) {
     const runtimeLock =
       options.runtimeLock ??
       (options.loadRuntimeLockImpl ?? readRuntimeLock)(
         options.runtimeLockPath ?? RUNTIME_LOCK_PATH
       );
     const expectedSha256 = expectedWasperNativeServerSha256(runtimeLock);
-    if (nativeServerSha256 !== expectedSha256) {
-      throw new Error(
-        `packaged native server does not match the published Wasper 1.8.0 runtime: ${nativeServerSha256}`
-      );
-    }
-    baselineKind = 'published-exact';
+    baselineKind = nativeServerSha256 === expectedSha256 ? 'published-exact' : 'different-build';
+  } else if (compareVersions(versionParts, PUBLISHED_BASELINE_VERSION) < 0) {
+    baselineKind = 'older-release';
   } else {
     baselineKind = 'newer-release';
   }
@@ -150,6 +163,7 @@ function discoverWasperApp(options = {}) {
     nativeServerPath,
     nativeServerSha256,
     baselineKind,
+    ...(localBuildCommit === undefined ? {} : { buildCommit: localBuildCommit }),
   });
 }
 

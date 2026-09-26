@@ -74,13 +74,25 @@ function collectReleaseIdentity(value) {
   ) {
     throw new TypeError('release.nativeServerSha256 must be a SHA-256 digest');
   }
-  if (!new Set(['published-exact', 'newer-release']).has(value.baselineKind)) {
-    throw new TypeError('release.baselineKind must identify a published or newer release');
+  if (
+    !new Set([
+      'published-exact',
+      'different-build',
+      'older-release',
+      'newer-release',
+      'local-build',
+    ]).has(value.baselineKind)
+  ) {
+    throw new TypeError('release.baselineKind must identify the measured build');
+  }
+  if (value.baselineKind === 'local-build' && !/^[a-f0-9]{7}([a-f0-9]{33})?$/u.test(value.buildCommit)) {
+    throw new TypeError('release.buildCommit must identify the local source commit');
   }
   return {
     version: value.version,
     nativeServerSha256: value.nativeServerSha256,
     baselineKind: value.baselineKind,
+    ...(value.baselineKind === 'local-build' ? { buildCommit: value.buildCommit } : {}),
   };
 }
 
@@ -250,6 +262,9 @@ function projectPublicModelIdentity(value) {
       version: identity.release.version,
       nativeServerSha256: identity.release.nativeServerSha256,
       baselineKind: identity.release.baselineKind,
+      ...(identity.release.buildCommit === undefined
+        ? {}
+        : { buildCommit: identity.release.buildCommit }),
     };
   }
   return deepFreeze({

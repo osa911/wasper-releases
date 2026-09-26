@@ -7,12 +7,16 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { runCli } = require('../src/cli.cjs');
-const { collectModelIdentity } = require('../src/runtime/model-identity.cjs');
+const {
+  collectModelIdentity,
+  projectPublicModelIdentity,
+} = require('../src/runtime/model-identity.cjs');
 const { resolveWasperMetalDefinition } = require('../src/runtime/adapters/wasper-metal.cjs');
 const { discoverWasperApp } = require('../src/runtime/wasper-app.cjs');
 
 const EXPECTED_SHA256 = 'a'.repeat(64);
 const OTHER_SHA256 = 'b'.repeat(64);
+const LOCAL_COMMIT = '0123456';
 
 function temporaryDirectory(t) {
   const directory = fs.realpathSync.native(
@@ -110,18 +114,29 @@ test('uses an explicit Wasper.app path instead of the default location', t => {
   assert.equal(discovered.baselineKind, 'newer-release');
 });
 
-test('rejects a release older than 1.8.0', t => {
+test('accepts Wasper 1.5.0 and records its distinct release identity', t => {
   const root = temporaryDirectory(t);
-  const oldApp = createApp(root, 'Wasper.app', '1.7.9');
+  const app = createApp(root, 'Wasper.app', '1.5.0');
+  const discovered = discoverWasperApp({
+    appPath: app.appPath,
+    runtimeLock: runtimeLock(),
+    ...discoveryDependencies([app]),
+  });
+  assert.equal(discovered.version, '1.5.0');
+  assert.equal(discovered.nativeServerSha256, EXPECTED_SHA256);
+  assert.equal(discovered.baselineKind, 'older-release');
+});
 
+test('rejects a Wasper build older than the supported 1.5.0 protocol', t => {
+  const root = temporaryDirectory(t);
+  const app = createApp(root, 'Wasper.app', '1.4.9');
   assert.throws(
-    () =>
-      discoverWasperApp({
-        appPath: oldApp.appPath,
-        runtimeLock: runtimeLock(),
-        ...discoveryDependencies([oldApp]),
-      }),
-    /requires Wasper 1\.8\.0 or later/
+    () => discoverWasperApp({
+      appPath: app.appPath,
+      runtimeLock: runtimeLock(),
+      ...discoveryDependencies([app]),
+    }),
+    /requires Wasper 1\.5\.0 or later/
   );
 });
 
@@ -186,18 +201,63 @@ test('rejects an app without the packaged native server', t => {
   );
 });
 
-test('rejects an unexpected native-server hash for Wasper 1.8.0', t => {
+test('records a different native-server build with the same 1.8.0 app version', t => {
   const root = temporaryDirectory(t);
   const app = createApp(root, 'Wasper.app', '1.8.0', { sha256: OTHER_SHA256 });
+  const discovered = discoverWasperApp({
+    appPath: app.appPath,
+    runtimeLock: runtimeLock(),
+    ...discoveryDependencies([app]),
+  });
+  assert.equal(discovered.nativeServerSha256, OTHER_SHA256);
+  assert.equal(discovered.baselineKind, 'different-build');
+});
+
+test('explicit local build records its clean source commit and native-server hash', t => {
+  const root = temporaryDirectory(t);
+  const app = createApp(root, 'Wasper.app', '1.8.0', { sha256: OTHER_SHA256 });
+  fs.writeFileSync(
+    path.join(app.appPath, 'Contents/Resources/build-info.json'),
+    JSON.stringify({ commit: LOCAL_COMMIT, dirty: false, variant: 'production' })
+  );
+
+  const discovered = discoverWasperApp({
+    appPath: app.appPath,
+    runtimeLock: runtimeLock(),
+    localBuildCommit: LOCAL_COMMIT,
+    ...discoveryDependencies([app]),
+  });
+
+  assert.equal(discovered.baselineKind, 'local-build');
+  assert.equal(discovered.buildCommit, LOCAL_COMMIT);
+  assert.equal(discovered.nativeServerSha256, OTHER_SHA256);
+});
+
+test('local build opt-in rejects a different or dirty source build', t => {
+  const root = temporaryDirectory(t);
+  const app = createApp(root, 'Wasper.app', '1.8.0', { sha256: OTHER_SHA256 });
+  const buildInfoPath = path.join(app.appPath, 'Contents/Resources/build-info.json');
+  fs.writeFileSync(
+    buildInfoPath,
+    JSON.stringify({ commit: LOCAL_COMMIT, dirty: false, variant: 'production' })
+  );
+  const options = {
+    appPath: app.appPath,
+    runtimeLock: runtimeLock(),
+    ...discoveryDependencies([app]),
+  };
 
   assert.throws(
-    () =>
-      discoverWasperApp({
-        appPath: app.appPath,
-        runtimeLock: runtimeLock(),
-        ...discoveryDependencies([app]),
-      }),
-    /does not match the published Wasper 1\.8\.0 runtime/
+    () => discoverWasperApp({ ...options, localBuildCommit: '0000000' }),
+    /local build commit does not match/
+  );
+  fs.writeFileSync(
+    buildInfoPath,
+    JSON.stringify({ commit: LOCAL_COMMIT, dirty: true, variant: 'production' })
+  );
+  assert.throws(
+    () => discoverWasperApp({ ...options, localBuildCommit: LOCAL_COMMIT }),
+    /local build must be clean and production/
   );
 });
 
@@ -327,5 +387,34 @@ test('preserves the Wasper release classification in model identity', t => {
     version: '1.8.0',
     nativeServerSha256: EXPECTED_SHA256,
     baselineKind: 'published-exact',
+  });
+});
+
+test('public model evidence distinguishes a local build from the published release', t => {
+  const root = temporaryDirectory(t);
+  const modelPath = path.join(root, 'model.bin');
+  fs.writeFileSync(modelPath, 'model');
+
+  const identity = collectModelIdentity({
+    artifacts: [modelPath],
+    executable: {
+      path: '/Applications/Wasper.app/Contents/Resources/bin/wasper-parakeet-server',
+      version: '1.8.0',
+      versionEvidence: { command: ['/usr/bin/plutil'], rawOutput: '1.8.0\n' },
+    },
+    launchCommand: ['wasper-parakeet-server', '--model-dir', modelPath],
+    release: {
+      version: '1.8.0',
+      nativeServerSha256: OTHER_SHA256,
+      baselineKind: 'local-build',
+      buildCommit: LOCAL_COMMIT,
+    },
+  });
+
+  assert.deepEqual(projectPublicModelIdentity(identity).identity.release, {
+    version: '1.8.0',
+    nativeServerSha256: OTHER_SHA256,
+    baselineKind: 'local-build',
+    buildCommit: LOCAL_COMMIT,
   });
 });

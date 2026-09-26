@@ -27,6 +27,7 @@ test('loads seven ordered public runtimes and the released Wasper binary identit
     lock.runtimes.map(runtime => runtime.id),
     ids
   );
+  assert.ok(lock.runtimes.every(runtime => runtime.reproduction.state === 'ready'));
   assert.equal(
     expectedWasperNativeServerSha256(lock),
     'b4afc58d5a5995b9a8785cfdd6d1379e7384a4c87b6e178443a23aeea01a51a9'
@@ -131,6 +132,18 @@ test('rejects malformed URLs, short revisions and invalid hashes even when autho
       },
       /binary dependency SHA-256/,
     ],
+    [
+      lock => {
+        lock.runtimes[2].conversion.outputs[1].sha256 = 'invalid';
+      },
+      /conversion output/,
+    ],
+    [
+      lock => {
+        lock.runtimes[2].conversion.unreviewedOption = true;
+      },
+      /conversion lock/,
+    ],
   ];
   for (const [mutate, expected] of cases) {
     const lock = structuredClone(loadRuntimeLock());
@@ -176,10 +189,52 @@ test('pins NVIDIA’s official macOS Metal runtime archive', () => {
   assert.equal(nvidia.source, undefined);
 });
 
+test('Local MLX INT8 is a locked derivative of the public MLX Community model', () => {
+  const lock = loadRuntimeLock();
+  const localMlx = lock.runtimes.find(runtime => runtime.id === 'mlx-int8-local');
+
+  assert.equal(localMlx.reproduction.state, 'ready');
+  assert.deepEqual(localMlx.reproduction.limitations, []);
+  assert.deepEqual(localMlx.conversion, {
+    state: 'ready',
+    baseRuntimeId: 'mlx-fp32',
+    bits: 8,
+    groupSize: 64,
+    script: {
+      path: 'src/runtime/convert-local-mlx-int8.py',
+      sha256: '82fb4fc0b8b01a472737cbf49b86ac849cec0c9da2b94ebbd2ef3bbef98aa720',
+    },
+    outputs: [
+      {
+        path: 'config.json',
+        sha256: 'ae57a63a360b47142ffb60c67d40e97b4570599fea5505f39ae4d86f970e8fc6',
+        sizeBytes: 318477,
+      },
+      {
+        path: 'model.safetensors',
+        sha256: '3951eca3266db014cbe13873e6f3b0eb59f451a865392fb0e129b7af9b7b4536',
+        sizeBytes: 943673174,
+      },
+      {
+        path: 'vocab.txt',
+        sha256: '3cde1409fd78783a79b29ed4d32da57c746993856f7c8263bcb905d2e5839db7',
+        sizeBytes: 46772,
+      },
+    ],
+  });
+});
+
 test('adapters derive public artifact and holder paths and selected Python from the lock', () => {
   const layout = resolveLayout();
   const lock = loadRuntimeLock();
-  for (const id of ['mlx-fp32', 'handy-gguf-q8', 'nvidia-gguf-q8', 'istupakov-onnx-int8']) {
+  for (const id of [
+    'mlx-fp32',
+    'mlx-int8-local',
+    'handy-gguf-q8',
+    'nvidia-gguf-q8',
+    'istupakov-onnx-int8',
+    'fluid-coreml-mixed',
+  ]) {
     const definition = resolveRuntimeAdapterDefinition(id, {
       layout,
       lock,
@@ -191,11 +246,9 @@ test('adapters derive public artifact and holder paths and selected Python from 
         file.startsWith(path.join(layout.artifactsRoot, id))
       )
     );
-    if (id !== 'nvidia-gguf-q8') assert.equal(definition.command, '/selected/python');
+    if (!['nvidia-gguf-q8', 'fluid-coreml-mixed'].includes(id))
+      assert.equal(definition.command, '/selected/python');
     else assert.ok(definition.command.startsWith(path.join(layout.holdersRoot, id)));
     assert.deepEqual(definition.longAudio, lock.runtimes.find(row => row.id === id).longAudio);
-  }
-  for (const id of ['mlx-int8-local', 'fluid-coreml-mixed']) {
-    assert.throws(() => resolveRuntimeAdapterDefinition(id, { layout, lock }), /blocked/);
   }
 });

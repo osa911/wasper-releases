@@ -15,7 +15,7 @@ const LAYOUT_OPTIONS = new Map([
 ]);
 const MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
 const PUBLIC_RUN_SCHEMA = 'wasper.parakeet-runtime-benchmark.public-run.v1';
-const READY_SHORT_RUNTIME_COUNT = 5;
+const READY_SHORT_RUNTIME_COUNT = 7;
 const READY_SHORT_VERIFICATION = 'partial-non-comparable';
 
 function digest(value) {
@@ -37,6 +37,7 @@ function parseCommandArguments(argv) {
     cacheDir: null,
     outputDir: null,
     wasperApp: null,
+    audioDir: null,
     cohort: null,
     acceptSourceTerms: false,
   };
@@ -59,6 +60,18 @@ function parseCommandArguments(argv) {
         throw new TypeError('--cohort requires a value');
       }
       options.cohort = value;
+      index += 1;
+      continue;
+    }
+    if (argument === '--audio-dir' && options.audioDir === null) {
+      if (!['benchmark', 'recover-corpus', 'smoke'].includes(command)) {
+        throw new TypeError(`${command} does not accept --audio-dir`);
+      }
+      const value = argumentsList[index + 1];
+      if (typeof value !== 'string' || value === '' || value.startsWith('--')) {
+        throw new TypeError('--audio-dir requires a value');
+      }
+      options.audioDir = value;
       index += 1;
       continue;
     }
@@ -86,7 +99,7 @@ function parseCommandArguments(argv) {
 }
 
 function createCommandPlan(argv, { homeDirectory } = {}) {
-  const { command, cacheDir, outputDir, wasperApp, mode, cohort, acceptSourceTerms } =
+  const { command, cacheDir, outputDir, wasperApp, audioDir, mode, cohort, acceptSourceTerms } =
     parseCommandArguments(argv);
   const layout =
     command === 'audit-public'
@@ -97,7 +110,7 @@ function createCommandPlan(argv, { homeDirectory } = {}) {
           ...(wasperApp === null ? {} : { wasperApp }),
           ...(homeDirectory === undefined ? {} : { homeDirectory }),
         });
-  return Object.freeze({ command, layout, mode, cohort, acceptSourceTerms, writes: false });
+  return Object.freeze({ command, layout, audioDir, mode, cohort, acceptSourceTerms, writes: false });
 }
 
 function readyShortRuntimeDescriptors(runtimeLock) {
@@ -145,8 +158,8 @@ function createPublicRunIdentity(manifest, runtimeLock, { mode = 'full', runtime
     },
     schedule: {
       passes: MEASURED_PASSES,
-      seed: 'public-parakeet-runtime-v1',
-      order: 'three sequential rotated runtime passes',
+      seed: 'holder-v3-refresh-20260913-r2',
+      order: 'three rotated runtime passes with frozen fixture ranking',
     },
     scoring: { scope: 'full references', metrics: ['WER', 'CER'] },
     runtimeCells: cells,
@@ -185,6 +198,7 @@ async function runBenchmark({
     layout: plan.layout,
     cohort,
     acceptSourceTerms: plan.acceptSourceTerms,
+    ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
   });
   await smokeRuntimeAdapters({
     layout: plan.layout,
@@ -261,6 +275,7 @@ async function runCli(
       layout: plan.layout,
       cohort: plan.cohort,
       acceptSourceTerms: plan.acceptSourceTerms,
+      ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
     });
     const result = Object.freeze({
       command: plan.command,
@@ -287,6 +302,7 @@ async function runCli(
       layout: plan.layout,
       cohort: 'short',
       acceptSourceTerms: false,
+      ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
     });
     const smoke = await smokeRuntimeAdapters({
       layout: plan.layout,

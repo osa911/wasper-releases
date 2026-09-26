@@ -86,6 +86,67 @@ function validateArtifactRedirectHosts(runtime) {
   }
 }
 
+function validateHashedFile(entry, label) {
+  if (
+    entry === null ||
+    typeof entry !== 'object' ||
+    Array.isArray(entry) ||
+    !/^[a-f0-9]{64}$/u.test(entry.sha256) ||
+    !Number.isSafeInteger(entry.sizeBytes) ||
+    entry.sizeBytes <= 0
+  ) {
+    throw new Error(`${label} is invalid`);
+  }
+  relativePath(entry.path);
+}
+
+function validateConversion(runtime, runtimeIds) {
+  if (runtime.id !== 'mlx-int8-local') {
+    if (runtime.conversion !== undefined) throw new Error('only Local MLX INT8 may define a conversion');
+    return;
+  }
+  const conversion = runtime.conversion;
+  if (
+    conversion === null ||
+    typeof conversion !== 'object' ||
+    Array.isArray(conversion) ||
+    !isDeepStrictEqual(Object.keys(conversion).sort(), [
+      'baseRuntimeId',
+      'bits',
+      'groupSize',
+      'outputs',
+      'script',
+      'state',
+    ]) ||
+    conversion.state !== 'ready' ||
+    conversion.baseRuntimeId !== 'mlx-fp32' ||
+    conversion.bits !== 8 ||
+    conversion.groupSize !== 64 ||
+    !runtimeIds.has(conversion.baseRuntimeId) ||
+    conversion.script === null ||
+    typeof conversion.script !== 'object' ||
+    Array.isArray(conversion.script) ||
+    !isDeepStrictEqual(Object.keys(conversion.script).sort(), ['path', 'sha256']) ||
+    !Array.isArray(conversion.outputs) ||
+    conversion.outputs.length !== 3
+  ) {
+    throw new Error('Local MLX INT8 conversion lock is invalid');
+  }
+  relativePath(conversion.script.path);
+  if (!/^[a-f0-9]{64}$/u.test(conversion.script.sha256)) {
+    throw new Error('Local MLX INT8 conversion script SHA-256 is invalid');
+  }
+  const outputs = new Set();
+  for (const output of conversion.outputs) {
+    validateHashedFile(output, 'Local MLX INT8 conversion output');
+    if (outputs.has(output.path)) throw new Error('Local MLX INT8 conversion outputs duplicate a path');
+    outputs.add(output.path);
+  }
+  if (!isDeepStrictEqual([...outputs].sort(), ['config.json', 'model.safetensors', 'vocab.txt'])) {
+    throw new Error('Local MLX INT8 conversion outputs are incomplete');
+  }
+}
+
 // The checked-in JSON is the authority, not a second hardcoded set of hashes.
 // The optional authority is an explicit fixture seam; no CLI accepts one.
 function validateRuntimeLock(value, authority = readAuthority()) {
@@ -98,6 +159,7 @@ function validateRuntimeLock(value, authority = readAuthority()) {
   ) {
     throw new Error('runtime lock must contain exactly seven ordered runtime IDs');
   }
+  const runtimeIds = new Set(value.runtimes.map(runtime => runtime.id));
   for (const runtime of value.runtimes) {
     if (
       !isDeepStrictEqual(runtime.languagePolicy, { mode: 'automatic', languageHint: null }) ||
@@ -146,6 +208,7 @@ function validateRuntimeLock(value, authority = readAuthority()) {
     ) {
       throw new Error('runtime lock must name each reproduction blocker');
     }
+    validateConversion(runtime, runtimeIds);
     if (!['none', 'cmake', 'swift', 'archive'].includes(runtime.build?.kind))
       throw new Error('runtime lock has an unsupported build kind');
     relativePath(runtime.modelFile);
