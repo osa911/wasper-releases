@@ -480,6 +480,10 @@ async function runRuntimeBenchmark({
       activation.warmup = await adapter.warmup(hydratedManifest.runCorpus.warmup, {
         languagePolicy: { mode: 'automatic', languageHint: null },
       });
+      const warmupError = structuredAdapterResponseError(activation.warmup);
+      if (warmupError) {
+        throw metalAllocationCapError(warmupError, maxPhysicalFootprintBytes, null) ?? warmupError;
+      }
       activation.afterWarmupFootprint = assertPostResponsePhysicalFootprintCap(
         await adapter.sampleFootprint(),
         maxPhysicalFootprintBytes
@@ -536,11 +540,13 @@ async function runRuntimeBenchmark({
               observedMemoryBytes: error.observedBytes,
               observedPostResponsePhysicalFootprintBytes:
                 error.footprint?.postResponsePhysicalFootprintBytes ??
-                error.footprint?.post_response_phys_footprint,
+                error.footprint?.post_response_phys_footprint ??
+                null,
             },
           }
         : { name: error?.name ?? 'Error', message: error?.message ?? String(error) };
       store.writeActivation(activation);
+      if (error?.code === 'ETIMEDOUT' && error?.operation === 'shutdown') throw error;
       for (const item of items) {
         if (byOrder.has(item.order)) continue;
         const record = isPhysicalFootprintCapError(error)

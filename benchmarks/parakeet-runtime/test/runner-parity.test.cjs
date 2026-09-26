@@ -11,6 +11,7 @@ const { runCli } = require('../src/cli.cjs');
 const { RUNTIME_DESCRIPTORS } = require('../src/runtime/constants.cjs');
 const { loadRuntimeLock } = require('../src/runtime/locks.cjs');
 const { runRuntimeBenchmark } = require('../src/runtime/runner.cjs');
+const { AdapterTimeoutError } = require('../src/runtime/adapters/process-client.cjs');
 
 function temporaryLayout(t) {
   const homeDirectory = fs.realpathSync.native(
@@ -71,7 +72,7 @@ function runIdentity() {
   };
 }
 
-function fakeAdapterFactory(events, { transcribeFailure, sampleFootprintBytes, simulateIncompleteLong = true } = {}) {
+function fakeAdapterFactory(events, { transcribeFailure, warmupFailure, sampleFootprintBytes, simulateIncompleteLong = true } = {}) {
   let activeRuntime = null;
   const failedLongRequests = new Set();
   return runtime => {
@@ -120,6 +121,8 @@ function fakeAdapterFactory(events, { transcribeFailure, sampleFootprintBytes, s
       },
       async warmup(fixture, requestOptions) {
         events.push({ type: 'warmup', runtimeId: runtime.id, fixtureId: fixture.id, requestOptions });
+        const failure = warmupFailure?.({ runtime, fixture });
+        if (failure !== undefined) return failure;
         return { rawTranscript: 'discarded warmup transcript', wallSeconds: 999 };
       },
       async transcribe(fixture, requestOptions) {
@@ -393,6 +396,53 @@ test('a post-response physical-footprint breach excludes only its long recording
   assert.equal(run.records.filter(record => record.fixtureId !== 'en-long-physical' && record.outcome === 'success').length, 6);
   assert.equal(events.filter(event => event.type === 'start').length, 9);
   assert.equal(events.filter(event => event.type === 'stop').length, 9);
+});
+
+test('failed startup cleanup aborts before launching another activation', async t => {
+  const layout = temporaryLayout(t);
+  let starts = 0;
+  await assert.rejects(
+    runRuntimeBenchmark({
+      layout,
+      manifest: publicManifest(layout),
+      runIdentity: runIdentity(),
+      runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+      adapterFactory: () => ({
+        async start() {
+          starts += 1;
+          throw new AdapterTimeoutError('shutdown', 10);
+        },
+        async stop() {
+          throw new Error('stop requires an active adapter');
+        },
+      }),
+      now: () => new Date('2026-09-24T12:34:56.000Z'),
+    }),
+    error => error.code === 'ETIMEDOUT' && error.operation === 'shutdown'
+  );
+  assert.equal(starts, 1);
+});
+
+test('an over-cap warm-up response excludes the runtime before timed requests', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const diagnostic = 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB';
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest: publicManifest(layout),
+    runIdentity: runIdentity(),
+    runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+    adapterFactory: fakeAdapterFactory(events, {
+      simulateIncompleteLong: false,
+      warmupFailure: () => ({ error: { type: 'runtime-error', message: diagnostic } }),
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  assert.equal(run.records.length, 6);
+  assert.ok(run.records.every(record => record.outcome === 'memory-excluded'));
+  assert.equal(events.filter(event => event.type === 'start').length, 1);
+  assert.equal(events.filter(event => event.type === 'transcribe').length, 0);
 });
 
 test('runner rotates a supplied valid runtime order after its first pass', async t => {
