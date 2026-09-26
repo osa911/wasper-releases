@@ -186,6 +186,13 @@ comparing runtimes. The report withholds long quality and speed when coverage
 is incomplete. Do not rank a partial row against a complete one or treat the
 `ready-short` verification report as the full comparison.
 
+Each completed request is saved immediately by Node to the run's `requests/`
+directory. A temporary file is published only after the write completes.
+Saving results is outside the response timer. If a result cannot be saved,
+the benchmark stops with `EVIDENCE_WRITE_FAILED` and keeps earlier records.
+It does not count a disk-write failure as a transcription failure. A new run
+creates a separate run directory and preserves the interrupted run.
+
 `--accept-source-terms` acknowledges the terms and licenses recorded in the
 corpus manifests before any long-source download. Read those terms first. The
 flag does not authorize reuse beyond a source's license. The Dutch recording

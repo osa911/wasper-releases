@@ -155,6 +155,54 @@ function fakeAdapterFactory(events, { transcribeFailure, warmupFailure, sampleFo
   };
 }
 
+test('a result save failure stops the run without converting successful transcription into an error', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  let injected = false;
+  const shouldFail = bytes => {
+    if (injected || typeof bytes !== 'string') return false;
+    let record;
+    try {
+      record = JSON.parse(bytes);
+    } catch {
+      return false;
+    }
+    if (record.order !== 1 || record.outcome !== 'success') return false;
+    injected = true;
+    return true;
+  };
+  const writeFileSync = fs.writeFileSync;
+  t.mock.method(fs, 'writeFileSync', function (file, bytes, ...args) {
+    if (shouldFail(bytes))
+      throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+    return writeFileSync.call(this, file, bytes, ...args);
+  });
+  await assert.rejects(
+    runRuntimeBenchmark({
+      layout,
+      manifest: publicManifest(layout),
+      runIdentity: runIdentity(),
+      adapterFactory: fakeAdapterFactory(events, {
+        simulateIncompleteLong: false,
+      }),
+    }),
+    error => error.code === 'EVIDENCE_WRITE_FAILED' && error.cause?.code === 'ENOSPC'
+  );
+  assert.equal(injected, true);
+  assert.equal(events.filter(event => event.type === 'transcribe').length, 2);
+  assert.equal(events.at(-1).type, 'stop');
+  const runDirectory = path.join(layout.outputRoot, fs.readdirSync(layout.outputRoot)[0]);
+  const files = fs
+    .readdirSync(path.join(runDirectory, 'requests'))
+    .filter(name => name.endsWith('.json'));
+  assert.equal(files.length, 1);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(runDirectory, 'requests', files[0]))).outcome,
+    'success'
+  );
+  assert.equal(fs.existsSync(path.join(runDirectory, 'report.md')), false);
+});
+
 test('runner preserves sequential automatic-language three-pass timing and partial-long rules', async t => {
   const layout = temporaryLayout(t);
   const events = [];

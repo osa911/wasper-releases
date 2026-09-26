@@ -8,7 +8,7 @@ const { canonicalJson } = require('../asr-quality/manifest.cjs');
 const { assertCanonicalScore, scoreTranscript } = require('../asr-quality/scoring.cjs');
 const { isInside, resolveLayout } = require('../config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./constants.cjs');
-const { createEvidenceStore } = require('./evidence-store.cjs');
+const { createEvidenceStore, EvidenceWriteError } = require('./evidence-store.cjs');
 const { aggregateRuntimeEvidence } = require('./aggregation.cjs');
 const { writePublicReport } = require('./report.cjs');
 const { projectPublicEvidence } = require('./reporting/public-projection.cjs');
@@ -514,6 +514,7 @@ async function runRuntimeBenchmark({
           store.writeRequest(record);
           byOrder.set(item.order, record);
         } catch (error) {
+          if (error instanceof EvidenceWriteError) throw error;
           const record = isPhysicalFootprintCapError(error)
             ? memoryExcludedRecord(item, fixture, error)
             : errorRecord(item, fixture, error);
@@ -529,6 +530,7 @@ async function runRuntimeBenchmark({
         consumed += 1;
       }
     } catch (error) {
+      if (error instanceof EvidenceWriteError) throw error;
       activation.error = isPhysicalFootprintCapError(error)
         ? {
             name: error.name,
