@@ -170,11 +170,13 @@ the verified benchmark cache still come from their public links. You can use
 provide stays outside the benchmark cache, and `npm run clean` does not remove
 it.
 
-The runner downloads or verifies the locked models and corpus, discards a
-warm-up request, then makes direct, complete-recording requests to each
-runtime in three sequential rotated passes. It supplies no language hint and
-times the response only; it does not include Wasper.app recording or paste
-latency. A full schedule contains 5,544 timed requests. Run it without other
+The runner downloads or verifies the locked models and corpus, then makes
+direct, complete-recording requests to each runtime in three sequential
+rotated passes. It supplies no language hint and times the response only; it
+does not include Wasper.app recording or paste latency. Consecutive short
+recordings share a resident runtime; each long recording starts a fresh runtime.
+Every activation receives one discarded warm-up request before its timed
+requests. A full schedule contains 5,544 timed requests. Run it without other
 GPU-heavy work on the Mac.
 
 On completion, the command prints a `runDirectory`. Open `report.md` in that
@@ -226,7 +228,11 @@ RTF is response time divided by audio duration. Lower than 1.0 means a response
 faster than real time. WER is word-edit errors divided by reference words; CER
 is character-edit errors divided by reference characters. Lower WER and CER are
 better. Warm-up requests establish runtime residency and are excluded from
-timing.
+timing. Runtime startup, warm-up, and shutdown are not included in the reported
+request time, but the extra long-recording restarts increase total benchmark
+wall-clock time. This process lifecycle differs from earlier published runs;
+record the benchmark checkout SHA separately and compare the Wasper binary
+identity before comparing speeds.
 
 Memory evidence for a timed request is one macOS physical-footprint sample for
 the owned runtime process tree, collected only after that response resolves.
@@ -235,8 +241,14 @@ already over-cap runtime before scoring requests. The request result is reported
 as `post_response_phys_footprint`; it is not a peak-memory measurement during a
 request. The 8 GiB exclusion rule applies to those samples and to a runtime
 that explicitly reports a single allocation request above the cap. A runtime
-excluded for either condition stops for the rest of the run. This is not a
-hard memory limit: a post-response sample cannot prevent an oversized
+that breaches the cap during a timed request is marked `memory-excluded` for
+that recording only. The runner stops that activation and starts a fresh one
+for the next recording. If health or warm-up breaches the cap before any timed
+request, it excludes the remaining recordings for that runtime: no recording
+can safely start under that cap. The run stops rather than starting another
+process if shutdown fails. The 8 GiB cap is per runtime process tree, not a
+machine-wide limit or a safe configuration promise for an 8 GiB Mac. This is
+not a hard memory limit: a post-response sample cannot prevent an oversized
 allocation while a request is running. If a runtime fails before responding,
 inspect its recorded error and treat its coverage as incomplete.
 

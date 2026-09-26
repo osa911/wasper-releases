@@ -465,6 +465,114 @@ async function runRuntimeBenchmark({
     maxPhysicalFootprintBytes
   );
 
+  async function runActivation(cell, pass, items) {
+    const adapter = adapterFactory(cell);
+    const activation = { sequence: activationSequence++, cellId: cell.id, pass, lifecycle: [] };
+    let consumed = 0;
+    try {
+      activation.start = await adapter.start();
+      activation.health = await adapter.health();
+      activation.identity = await adapter.identity();
+      activation.afterHealthFootprint = assertPostResponsePhysicalFootprintCap(
+        await adapter.sampleFootprint(),
+        maxPhysicalFootprintBytes
+      );
+      activation.warmup = await adapter.warmup(hydratedManifest.runCorpus.warmup, {
+        languagePolicy: { mode: 'automatic', languageHint: null },
+      });
+      const warmupError = structuredAdapterResponseError(activation.warmup);
+      if (warmupError) {
+        throw metalAllocationCapError(warmupError, maxPhysicalFootprintBytes, null) ?? warmupError;
+      }
+      activation.afterWarmupFootprint = assertPostResponsePhysicalFootprintCap(
+        await adapter.sampleFootprint(),
+        maxPhysicalFootprintBytes
+      );
+      activation.lifecycle.push('start', 'health', 'identity', 'footprint', 'warmup');
+      store.writeActivation(activation);
+      for (const item of items) {
+        const fixture = fixtures.get(item.fixtureId);
+        try {
+          const { response, footprint } = await transcribeThenSamplePhysicalFootprint({
+            adapter,
+            fixture,
+            capBytes: maxPhysicalFootprintBytes,
+            requestOptions: { languagePolicy: { mode: 'automatic', languageHint: null } },
+          });
+          const score = scoreTranscript(fixture.reference.text, response.rawTranscript, fixture.language);
+          assertCanonicalScore(score, fixture.reference.text, response.rawTranscript, fixture.language);
+          const record = {
+            ...item,
+            outcome: 'success',
+            audioSeconds: fixture.normalizedAudio.durationSeconds,
+            wallSeconds: response.wallSeconds,
+            score,
+            footprint,
+            fixtureEvidence: fixtureEvidence(fixture),
+            raw: { response },
+          };
+          store.writeRequest(record);
+          byOrder.set(item.order, record);
+        } catch (error) {
+          const record = isPhysicalFootprintCapError(error)
+            ? memoryExcludedRecord(item, fixture, error)
+            : errorRecord(item, fixture, error);
+          store.writeRequest(record);
+          byOrder.set(item.order, record);
+          if (isPhysicalFootprintCapError(error)) {
+            activation.memoryExclusion = record.raw.memoryExclusion;
+            store.writeActivation(activation);
+            consumed += 1;
+            break;
+          }
+        }
+        consumed += 1;
+      }
+    } catch (error) {
+      activation.error = isPhysicalFootprintCapError(error)
+        ? {
+            name: error.name,
+            message: error.message,
+            code: error.code,
+            memoryExclusion: {
+              maxPhysicalFootprintBytes: error.capBytes,
+              metric: error.metric,
+              observedMemoryBytes: error.observedBytes,
+              observedPostResponsePhysicalFootprintBytes:
+                error.footprint?.postResponsePhysicalFootprintBytes ??
+                error.footprint?.post_response_phys_footprint ??
+                null,
+            },
+          }
+        : { name: error?.name ?? 'Error', message: error?.message ?? String(error) };
+      store.writeActivation(activation);
+      if (error?.code === 'ETIMEDOUT' && error?.operation === 'shutdown') throw error;
+      for (const item of items) {
+        if (byOrder.has(item.order)) continue;
+        const record = isPhysicalFootprintCapError(error)
+          ? memoryExcludedRecord(item, fixtures.get(item.fixtureId), error)
+          : errorRecord(item, fixtures.get(item.fixtureId), error);
+        store.writeRequest(record);
+        byOrder.set(item.order, record);
+      }
+      consumed = items.length;
+      // A runtime that cannot fit even before a scored request is not safe to
+      // start again for a different fixture under the same memory cap.
+      if (isPhysicalFootprintCapError(error)) memoryExcludedCells.set(cell.id, error);
+    } finally {
+      try {
+        await adapter.stop();
+      } catch (error) {
+        if (error?.message !== 'stop requires an active adapter') {
+          activation.stopError = { name: error?.name ?? 'Error', message: error?.message ?? String(error) };
+          store.writeActivation(activation);
+          throw error;
+        }
+      }
+    }
+    return consumed;
+  }
+
   for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
     for (const cell of rotate(baseRuntimeOrder, pass - 1)) {
       const items = schedule.filter(item => item.pass === pass && item.cellId === cell.id);
@@ -485,126 +593,24 @@ async function runRuntimeBenchmark({
         }
         continue;
       }
-      const adapter = adapterFactory(cell);
-      const activation = { sequence: activationSequence++, cellId: cell.id, pass, lifecycle: [] };
-      try {
-        activation.start = await adapter.start();
-        activation.health = await adapter.health();
-        activation.identity = await adapter.identity();
-        activation.afterHealthFootprint = assertPostResponsePhysicalFootprintCap(
-          await adapter.sampleFootprint(),
-          maxPhysicalFootprintBytes
-        );
-        activation.warmup = await adapter.warmup(hydratedManifest.runCorpus.warmup, {
-          languagePolicy: { mode: 'automatic', languageHint: null },
-        });
-        activation.afterWarmupFootprint = assertPostResponsePhysicalFootprintCap(
-          await adapter.sampleFootprint(),
-          maxPhysicalFootprintBytes
-        );
-        activation.lifecycle.push('start', 'health', 'identity', 'footprint', 'warmup');
-        store.writeActivation(activation);
-        for (let index = 0; index < measured.length; index += 1) {
-          const item = measured[index];
-          const fixture = fixtures.get(item.fixtureId);
-          try {
-            const { response, footprint } = await transcribeThenSamplePhysicalFootprint({
-              adapter,
-              fixture,
-              capBytes: maxPhysicalFootprintBytes,
-              requestOptions: { languagePolicy: { mode: 'automatic', languageHint: null } },
-            });
-            const score = scoreTranscript(
-              fixture.reference.text,
-              response.rawTranscript,
-              fixture.language
-            );
-            assertCanonicalScore(
-              score,
-              fixture.reference.text,
-              response.rawTranscript,
-              fixture.language
-            );
-            const record = {
-              ...item,
-              outcome: 'success',
-              audioSeconds: fixture.normalizedAudio.durationSeconds,
-              wallSeconds: response.wallSeconds,
-              score,
-              footprint,
-              fixtureEvidence: fixtureEvidence(fixture),
-              raw: { response },
-            };
+      for (let index = 0; index < measured.length;) {
+        if (memoryExcludedCells.has(cell.id)) {
+          const error = memoryExcludedCells.get(cell.id);
+          for (const item of measured.slice(index)) {
+            const record = memoryExcludedRecord(item, fixtures.get(item.fixtureId), error);
             store.writeRequest(record);
             byOrder.set(item.order, record);
-          } catch (error) {
-            const record = isPhysicalFootprintCapError(error)
-              ? memoryExcludedRecord(item, fixture, error)
-              : errorRecord(item, fixture, error);
-            store.writeRequest(record);
-            byOrder.set(item.order, record);
-            if (isPhysicalFootprintCapError(error)) {
-              activation.memoryExclusion = {
-                ...record.raw.memoryExclusion,
-                adapterStopped: error.adapterStopped,
-              };
-              store.writeActivation(activation);
-              memoryExcludedCells.set(cell.id, error);
-              for (const remaining of measured.slice(index + 1)) {
-                const excluded = memoryExcludedRecord(
-                  remaining,
-                  fixtures.get(remaining.fixtureId),
-                  error
-                );
-                store.writeRequest(excluded);
-                byOrder.set(remaining.order, excluded);
-              }
-              break;
-            }
+          }
+          break;
+        }
+        const cohort = fixtures.get(measured[index].fixtureId).cohort;
+        let end = index + 1;
+        if (cohort === 'short') {
+          while (end < measured.length && fixtures.get(measured[end].fixtureId).cohort === 'short') {
+            end += 1;
           }
         }
-      } catch (error) {
-        activation.error = isPhysicalFootprintCapError(error)
-          ? {
-              name: error.name,
-              message: error.message,
-              code: error.code,
-              memoryExclusion: {
-                maxPhysicalFootprintBytes: error.capBytes,
-                metric: error.metric,
-                observedMemoryBytes: error.observedBytes,
-                observedPostResponsePhysicalFootprintBytes:
-                  error.footprint?.postResponsePhysicalFootprintBytes ??
-                  error.footprint?.post_response_phys_footprint,
-              },
-            }
-          : {
-              name: error?.name ?? 'Error',
-              message: error?.message ?? String(error),
-            };
-        store.writeActivation(activation);
-        for (const item of measured) {
-          const record = isPhysicalFootprintCapError(error)
-            ? memoryExcludedRecord(item, fixtures.get(item.fixtureId), error)
-            : errorRecord(item, fixtures.get(item.fixtureId), error);
-          store.writeRequest(record);
-          byOrder.set(item.order, record);
-        }
-        if (isPhysicalFootprintCapError(error)) memoryExcludedCells.set(cell.id, error);
-      } finally {
-        if (!activation.memoryExclusion?.adapterStopped) {
-          try {
-            await adapter.stop();
-          } catch (error) {
-            if (error?.message !== 'stop requires an active adapter') {
-              activation.stopError = {
-                name: error?.name ?? 'Error',
-                message: error?.message ?? String(error),
-              };
-              store.writeActivation(activation);
-            }
-          }
-        }
+        index += await runActivation(cell, pass, measured.slice(index, end));
       }
     }
   }

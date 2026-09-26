@@ -11,6 +11,7 @@ const { runCli } = require('../src/cli.cjs');
 const { RUNTIME_DESCRIPTORS } = require('../src/runtime/constants.cjs');
 const { loadRuntimeLock } = require('../src/runtime/locks.cjs');
 const { runRuntimeBenchmark } = require('../src/runtime/runner.cjs');
+const { AdapterTimeoutError } = require('../src/runtime/adapters/process-client.cjs');
 
 function temporaryLayout(t) {
   const homeDirectory = fs.realpathSync.native(
@@ -71,11 +72,12 @@ function runIdentity() {
   };
 }
 
-function fakeAdapterFactory(events, { transcribeFailure } = {}) {
+function fakeAdapterFactory(events, { transcribeFailure, warmupFailure, sampleFootprintBytes, simulateIncompleteLong = true } = {}) {
   let activeRuntime = null;
   const failedLongRequests = new Set();
   return runtime => {
     assert.deepEqual(runtime.languagePolicy, { mode: 'automatic', languageHint: null });
+    let lastTranscribedFixture = null;
     return {
       async start() {
         assert.equal(activeRuntime, null, `only one runtime may be active; found ${activeRuntime}`);
@@ -111,16 +113,20 @@ function fakeAdapterFactory(events, { transcribeFailure } = {}) {
       },
       async sampleFootprint() {
         events.push({ type: 'footprint', runtimeId: runtime.id });
+        const bytes = sampleFootprintBytes?.(lastTranscribedFixture) ?? 1024;
         return {
-          post_response_phys_footprint: 1024,
-          postResponsePhysicalFootprintBytes: 1024,
+          post_response_phys_footprint: bytes,
+          postResponsePhysicalFootprintBytes: bytes,
         };
       },
       async warmup(fixture, requestOptions) {
         events.push({ type: 'warmup', runtimeId: runtime.id, fixtureId: fixture.id, requestOptions });
+        const failure = warmupFailure?.({ runtime, fixture });
+        if (failure !== undefined) return failure;
         return { rawTranscript: 'discarded warmup transcript', wallSeconds: 999 };
       },
       async transcribe(fixture, requestOptions) {
+        lastTranscribedFixture = fixture;
         events.push({
           type: 'transcribe',
           runtimeId: runtime.id,
@@ -130,6 +136,7 @@ function fakeAdapterFactory(events, { transcribeFailure } = {}) {
         const failure = transcribeFailure?.({ runtime, fixture });
         if (failure !== undefined) return failure;
         if (
+          simulateIncompleteLong &&
           runtime.id === RUNTIME_DESCRIPTORS[0].id &&
           fixture.cohort === 'long' &&
           !failedLongRequests.has(runtime.id)
@@ -161,7 +168,7 @@ test('runner preserves sequential automatic-language three-pass timing and parti
   });
 
   const starts = events.filter(event => event.type === 'start').map(event => event.runtimeId);
-  assert.deepEqual(starts, [
+  assert.deepEqual(starts.filter((_, index) => index % 2 === 0), [
     ...RUNTIME_DESCRIPTORS.map(runtime => runtime.id),
     ...RUNTIME_DESCRIPTORS.slice(1).map(runtime => runtime.id),
     RUNTIME_DESCRIPTORS[0].id,
@@ -169,8 +176,8 @@ test('runner preserves sequential automatic-language three-pass timing and parti
     RUNTIME_DESCRIPTORS[0].id,
     RUNTIME_DESCRIPTORS[1].id,
   ]);
-  assert.equal(events.filter(event => event.type === 'warmup').length, 21);
-  assert.equal(events.filter(event => event.type === 'stop').length, 21);
+  assert.equal(events.filter(event => event.type === 'warmup').length, 42);
+  assert.equal(events.filter(event => event.type === 'stop').length, 42);
   for (const event of events.filter(
     event => event.type === 'warmup' || event.type === 'transcribe'
   )) {
@@ -223,7 +230,7 @@ test('runner preserves structured adapter diagnostics before sampling or scoring
   assert.equal(record.raw.error.type, 'runtime-error');
 });
 
-test('runner excludes a runtime after a structured over-cap Metal allocation failure', async t => {
+test('runner excludes only the audio with a structured over-cap Metal allocation failure', async t => {
   const layout = temporaryLayout(t);
   const events = [];
   const diagnostic = 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB';
@@ -234,6 +241,7 @@ test('runner excludes a runtime after a structured over-cap Metal allocation fai
     manifest: publicManifest(layout),
     runIdentity: runIdentity(),
     adapterFactory: fakeAdapterFactory(events, {
+      simulateIncompleteLong: false,
       transcribeFailure({ runtime }) {
         if (injected || runtime.id !== 'wasper-metal-int8') return undefined;
         injected = true;
@@ -251,17 +259,190 @@ test('runner excludes a runtime after a structured over-cap Metal allocation fai
 
   const wasperRecords = run.records.filter(record => record.cellId === 'wasper-metal-int8');
   assert.equal(wasperRecords.length, 6);
-  assert.ok(wasperRecords.every(record => record.outcome === 'memory-excluded'));
+  assert.equal(wasperRecords.filter(record => record.outcome === 'memory-excluded').length, 1);
+  assert.equal(wasperRecords.filter(record => record.outcome === 'success').length, 5);
   assert.ok(
-    wasperRecords.every(
+    wasperRecords.filter(record => record.outcome === 'memory-excluded').every(
       record => record.raw.memoryExclusion.runtimeDiagnostic.message === diagnostic
     )
   );
   assert.equal(
     events.filter(event => event.type === 'transcribe' && event.runtimeId === 'wasper-metal-int8')
       .length,
-    1
+    6
   );
+});
+
+test('a long memory breach excludes only that recording and later audio uses a fresh runtime', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const manifest = {
+    schema: 'wasper.public-run-corpus.v1',
+    cohort: 'all',
+    fixtures: [
+      writeFixture(layout, 'en-short-independent', 'short', 'alpha bravo'),
+      writeFixture(layout, 'en-long-over-cap', 'long', 'charlie delta'),
+      writeFixture(layout, 'en-long-following', 'long', 'echo foxtrot'),
+    ],
+  };
+  let injected = false;
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest,
+    runIdentity: runIdentity(),
+    runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+    adapterFactory: fakeAdapterFactory(events, {
+      simulateIncompleteLong: false,
+      transcribeFailure({ fixture }) {
+        if (injected || fixture.id !== 'en-long-over-cap') return undefined;
+        injected = true;
+        return {
+          error: {
+            type: 'runtime-error',
+            message: 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB',
+          },
+        };
+      },
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  const records = run.records.filter(record => record.cellId === 'wasper-metal-int8');
+  assert.equal(records.length, 9);
+  assert.equal(records.filter(record => record.outcome === 'memory-excluded').length, 1);
+  assert.equal(records.filter(record => record.outcome === 'success').length, 8);
+  assert.ok(records.filter(record => record.fixtureId === 'en-short-independent').every(record => record.outcome === 'success'));
+  assert.ok(records.filter(record => record.fixtureId === 'en-long-following').every(record => record.outcome === 'success'));
+
+  const activeTranscriptions = [];
+  let active = false;
+  for (const event of events) {
+    if (event.type === 'start') active = true;
+    if (event.type === 'stop') active = false;
+    if (event.type === 'transcribe') {
+      assert.equal(active, true);
+      activeTranscriptions.push(event.fixtureId);
+    }
+  }
+  assert.equal(active, false);
+  assert.equal(activeTranscriptions.filter(id => id === 'en-long-following').length, 3);
+  assert.equal(events.filter(event => event.type === 'start').length, 9);
+  assert.equal(events.filter(event => event.type === 'stop').length, 9);
+});
+
+test('a short memory breach restarts the resident runtime without excluding the next short', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const manifest = {
+    schema: 'wasper.public-run-corpus.v1',
+    cohort: 'short',
+    fixtures: [
+      writeFixture(layout, 'en-short-first', 'short', 'alpha bravo'),
+      writeFixture(layout, 'en-short-second', 'short', 'charlie delta'),
+    ],
+  };
+  let injected = false;
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest,
+    runIdentity: runIdentity(),
+    runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+    adapterFactory: fakeAdapterFactory(events, {
+      simulateIncompleteLong: false,
+      transcribeFailure({ fixture }) {
+        if (injected || fixture.id !== 'en-short-first') return undefined;
+        injected = true;
+        return { error: {
+          type: 'runtime-error',
+          message: 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB',
+        } };
+      },
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  assert.equal(run.records.filter(record => record.outcome === 'memory-excluded').length, 1);
+  assert.equal(run.records.filter(record => record.outcome === 'success').length, 5);
+  assert.ok(run.records.filter(record => record.fixtureId === 'en-short-second').every(record => record.outcome === 'success'));
+  assert.equal(events.filter(event => event.type === 'start').length, 4);
+  assert.equal(events.filter(event => event.type === 'stop').length, 4);
+});
+
+test('a post-response physical-footprint breach excludes only its long recording', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const manifest = {
+    schema: 'wasper.public-run-corpus.v1',
+    cohort: 'all',
+    fixtures: [
+      writeFixture(layout, 'en-short-physical', 'short', 'alpha bravo'),
+      writeFixture(layout, 'en-long-physical', 'long', 'charlie delta'),
+      writeFixture(layout, 'en-long-safe', 'long', 'echo foxtrot'),
+    ],
+  };
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest,
+    runIdentity: runIdentity(),
+    runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+    adapterFactory: fakeAdapterFactory(events, {
+      simulateIncompleteLong: false,
+      sampleFootprintBytes: fixture => fixture?.id === 'en-long-physical' ? 9 * 1024 ** 3 : 1024,
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  assert.equal(run.records.filter(record => record.fixtureId === 'en-long-physical' && record.outcome === 'memory-excluded').length, 3);
+  assert.equal(run.records.filter(record => record.fixtureId !== 'en-long-physical' && record.outcome === 'success').length, 6);
+  assert.equal(events.filter(event => event.type === 'start').length, 9);
+  assert.equal(events.filter(event => event.type === 'stop').length, 9);
+});
+
+test('failed startup cleanup aborts before launching another activation', async t => {
+  const layout = temporaryLayout(t);
+  let starts = 0;
+  await assert.rejects(
+    runRuntimeBenchmark({
+      layout,
+      manifest: publicManifest(layout),
+      runIdentity: runIdentity(),
+      runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+      adapterFactory: () => ({
+        async start() {
+          starts += 1;
+          throw new AdapterTimeoutError('shutdown', 10);
+        },
+        async stop() {
+          throw new Error('stop requires an active adapter');
+        },
+      }),
+      now: () => new Date('2026-09-24T12:34:56.000Z'),
+    }),
+    error => error.code === 'ETIMEDOUT' && error.operation === 'shutdown'
+  );
+  assert.equal(starts, 1);
+});
+
+test('an over-cap warm-up response excludes the runtime before timed requests', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const diagnostic = 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB';
+  const run = await runRuntimeBenchmark({
+    layout,
+    manifest: publicManifest(layout),
+    runIdentity: runIdentity(),
+    runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
+    adapterFactory: fakeAdapterFactory(events, {
+      simulateIncompleteLong: false,
+      warmupFailure: () => ({ error: { type: 'runtime-error', message: diagnostic } }),
+    }),
+    now: () => new Date('2026-09-24T12:34:56.000Z'),
+  });
+
+  assert.equal(run.records.length, 6);
+  assert.ok(run.records.every(record => record.outcome === 'memory-excluded'));
+  assert.equal(events.filter(event => event.type === 'start').length, 1);
+  assert.equal(events.filter(event => event.type === 'transcribe').length, 0);
 });
 
 test('runner rotates a supplied valid runtime order after its first pass', async t => {
@@ -286,7 +467,8 @@ test('runner rotates a supplied valid runtime order after its first pass', async
     now: () => new Date('2026-09-24T12:34:56.000Z'),
   });
 
-  const starts = events.filter(event => event.type === 'start').map(event => event.runtimeId);
+  const starts = events.filter(event => event.type === 'start').map(event => event.runtimeId)
+    .filter((_, index) => index % 2 === 0);
   const passLength = RUNTIME_DESCRIPTORS.length;
 
   assert.deepEqual(
