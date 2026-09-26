@@ -397,14 +397,19 @@ function createProcessClient(
     }
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     await Promise.race([stopped, delayImpl(timeouts.stopMs)]);
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await Promise.race([stopped, delayImpl(timeouts.stopMs)]);
+    }
+    if (child.exitCode === null && child.signalCode === null) {
+      throw new AdapterTimeoutError('shutdown', timeouts.stopMs);
+    }
     lineReader?.close();
     child = null;
     residentIdentity = null;
   }
 
   async function stop() {
-    ensureRunning();
     await terminateChild();
   }
 

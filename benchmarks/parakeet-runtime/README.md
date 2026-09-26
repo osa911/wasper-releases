@@ -231,7 +231,8 @@ better. Warm-up requests establish runtime residency and are excluded from
 timing. Runtime startup, warm-up, and shutdown are not included in the reported
 request time, but the extra long-recording restarts increase total benchmark
 wall-clock time. This process lifecycle differs from earlier published runs;
-compare the recorded run revision and binary identity before comparing speeds.
+record the benchmark checkout SHA separately and compare the Wasper binary
+identity before comparing speeds.
 
 Memory evidence for a timed request is one macOS physical-footprint sample for
 the owned runtime process tree, collected only after that response resolves.
