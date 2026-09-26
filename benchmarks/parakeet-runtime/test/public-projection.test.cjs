@@ -205,6 +205,26 @@ test('public evidence derives the Wasper release label from the runtime identity
   });
 });
 
+test('public evidence retains local build provenance without labeling it as a release', () => {
+  const run = localRunWithText();
+  delete run.runIdentity.wasperRelease;
+  run.activations[0].identity.modelEvidence.identity.release = {
+    version: '1.8.0',
+    nativeServerSha256: 'c'.repeat(64),
+    baselineKind: 'local-build',
+    buildCommit: '0123456',
+  };
+
+  const projection = projectPublicEvidence(run);
+
+  assert.deepEqual(projection.run.wasperRelease, {
+    version: '1.8.0',
+    nativeServerSha256: 'c'.repeat(64),
+    baselineKind: 'local-build',
+    buildCommit: '0123456',
+  });
+});
+
 test('public evidence exposes a privacy-safe ready-short status and warns in the report', () => {
   const run = localRunWithText();
   run.runIdentity = {

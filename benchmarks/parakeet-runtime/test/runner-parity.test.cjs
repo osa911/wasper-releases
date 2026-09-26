@@ -422,15 +422,17 @@ test('full mode bootstraps every runtime before corpus recovery', async t => {
   const layout = temporaryLayout(t);
   const bootstrapped = [];
   let recovered = false;
+  const audioDir = path.join(layout.homeDirectory, 'local-audio');
 
   await assert.rejects(
-    runCli(['benchmark', 'full'], {
+    runCli(['benchmark', 'full', '--audio-dir', audioDir], {
       homeDirectory: layout.homeDirectory,
       loadRuntimeLockImpl: loadRuntimeLock,
       async bootstrapRuntimeImpl(runtimeId) {
         bootstrapped.push(runtimeId);
       },
-      async recoverCorpusImpl() {
+      async recoverCorpusImpl(options) {
+        assert.equal(options.audioDir, audioDir);
         recovered = true;
         throw new Error('manual long sources required');
       },
@@ -448,4 +450,15 @@ test('full mode bootstraps every runtime before corpus recovery', async t => {
     'fluid-coreml-mixed',
   ]);
   assert.equal(recovered, true);
+});
+
+test('public full-run identity uses the original three-pass fixture ordering seed', t => {
+  const { createPublicRunIdentity } = require('../src/cli.cjs');
+  const manifest = { schema: 'wasper.public-run-corpus.v1', cohort: 'all', fixtures: [] };
+  const runtimeLock = loadRuntimeLock();
+
+  const identity = createPublicRunIdentity(manifest, runtimeLock);
+
+  assert.equal(identity.schedule.passes, 3);
+  assert.equal(identity.schedule.seed, 'holder-v3-refresh-20260913-r2');
 });

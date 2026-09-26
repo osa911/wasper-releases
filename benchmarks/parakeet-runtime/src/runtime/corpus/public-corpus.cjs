@@ -431,7 +431,89 @@ function runNormalizedAudioTransform(storage, stage, sourcePath, wavPath, maximu
   });
 }
 
-async function prepareFixture(storage, fixture) {
+function localAudioSource(audioDir, fixture) {
+  if (audioDir === undefined) return null;
+  const directory = path.join(audioDir, fixture.fixtureId);
+  try {
+    const info = fs.lstatSync(directory);
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new Error(`local audio fixture directory is unsafe: ${directory}`);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  const source = path.join(directory, 'source');
+  try {
+    const info = fs.lstatSync(source);
+    if (!info.isFile() || info.isSymbolicLink())
+      throw new Error(`local audio source is unsafe: ${source}`);
+    if (info.size > SOURCE_LIMIT)
+      throw new Error(`local audio source exceeds size limit: ${source}`);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (sha256File(source) !== fixture.sourceSha256)
+    throw new Error(`local audio source SHA-256 mismatch: ${source}`);
+  return source;
+}
+
+async function cachedFixture(storage, fixture, destination) {
+  try {
+    storage.directory(destination, false);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  const sourcePath = path.join(destination, 'source');
+  const wavPath = path.join(destination, 'normalized.wav');
+  const referencePath = path.join(destination, 'reference.txt');
+  if (storage.hashFile(sourcePath).sha256 !== fixture.sourceSha256)
+    throw new Error('cached source SHA-256 mismatch');
+  if (storage.hashFile(referencePath).sha256 !== fixture.referenceSha256)
+    throw new Error('cached reference SHA-256 mismatch');
+  const audio = await verifyWav(storage, wavPath, fixture);
+  return fixtureEntry(storage, fixture, destination, audio);
+}
+
+function fixtureEntry(storage, fixture, destination, audio) {
+  const prefix = path.relative(storage.layout.corpusRoot, destination);
+  return {
+    fixtureId: fixture.fixtureId,
+    language: fixture.language,
+    cohort: fixture.cohort,
+    source: {
+      url: fixture.sourceUrl,
+      sha256: fixture.sourceSha256,
+      path: `${prefix}/source`,
+    },
+    normalizedAudio: {
+      ...audio,
+      sha256: fixture.normalizedWavSha256,
+      path: `${prefix}/normalized.wav`,
+    },
+    reference: {
+      url: fixture.referenceUrl,
+      sha256: fixture.referenceSha256,
+      path: `${prefix}/reference.txt`,
+    },
+    licenseUrl: fixture.licenseUrl,
+    attribution: fixture.attribution,
+  };
+}
+
+async function prepareFixture(storage, fixture, audioDir) {
+  const destination = path.join(storage.fixtures, fixture.fixtureId);
+  const cached = await cachedFixture(storage, fixture, destination);
+  if (cached) return cached;
+  for (const name of fs.readdirSync(storage.fixtures).sort()) {
+    if (
+      !name.startsWith(`${fixture.fixtureId}-`) ||
+      !/^[a-f0-9]{32}$/u.test(name.slice(fixture.fixtureId.length + 1))
+    ) continue;
+    const older = await cachedFixture(storage, fixture, path.join(storage.fixtures, name));
+    if (older) return older;
+  }
   const part = path.join(storage.downloads, `${fixture.fixtureId}.part`);
   let stage;
   let wavPath;
@@ -442,15 +524,25 @@ async function prepareFixture(storage, fixture) {
     storage.check();
     stage = storage.createTempDirectory(storage.downloads, `${fixture.fixtureId}-`);
     const sourcePath = path.join(stage, 'source');
-    await acquire(
-      storage,
-      fixture.sourceUrl,
-      fixture.acquisition.audio,
-      part,
-      fixture.sourceSha256,
-      SOURCE_LIMIT,
-      'source'
-    );
+    const localSource = localAudioSource(audioDir, fixture);
+    if (localSource) {
+      await storage.download(
+        part,
+        fs.createReadStream(localSource),
+        fixture.sourceSha256,
+        SOURCE_LIMIT
+      );
+    } else {
+      await acquire(
+        storage,
+        fixture.sourceUrl,
+        fixture.acquisition.audio,
+        part,
+        fixture.sourceSha256,
+        SOURCE_LIMIT,
+        'source'
+      );
+    }
     storage.promote(part, sourcePath);
     const referencePart = path.join(storage.downloads, `${fixture.fixtureId}.reference.part`);
     await acquire(
@@ -484,34 +576,11 @@ async function prepareFixture(storage, fixture) {
     storage.check();
     storage.track(wavPath);
     const audio = await verifyWav(storage, wavPath, fixture);
-    const destination = path.join(storage.fixtures, path.basename(stage));
     storage.check();
     storage.moveDirectory(stage, destination);
     publishedDirectory = destination;
     published = true;
-    const prefix = path.relative(storage.layout.corpusRoot, destination);
-    return {
-      fixtureId: fixture.fixtureId,
-      language: fixture.language,
-      cohort: fixture.cohort,
-      source: {
-        url: fixture.sourceUrl,
-        sha256: fixture.sourceSha256,
-        path: `${prefix}/source`,
-      },
-      normalizedAudio: {
-        ...audio,
-        sha256: fixture.normalizedWavSha256,
-        path: `${prefix}/normalized.wav`,
-      },
-      reference: {
-        url: fixture.referenceUrl,
-        sha256: fixture.referenceSha256,
-        path: `${prefix}/reference.txt`,
-      },
-      licenseUrl: fixture.licenseUrl,
-      attribution: fixture.attribution,
-    };
+    return fixtureEntry(storage, fixture, destination, audio);
   } catch (error) {
     failure = sourceError(fixture, error.message, error);
     throw failure;
@@ -547,7 +616,7 @@ async function prepareFixture(storage, fixture) {
 }
 
 async function preparePublicCorpus(
-  { layout, acceptSourceTerms = false, cohort = 'all' },
+  { layout, acceptSourceTerms = false, cohort = 'all', audioDir },
   { sourceManifests } = {}
 ) {
   const manifests = sourceManifests ?? [
@@ -555,11 +624,17 @@ async function preparePublicCorpus(
     require('../../../corpus/long-sources.json'),
   ];
   const fixtures = selectFixtures(manifests, cohort, acceptSourceTerms);
+  if (audioDir !== undefined) {
+    const info = fs.statSync(audioDir);
+    if (!info.isDirectory())
+      throw new Error(`local audio directory is not a directory: ${audioDir}`);
+    audioDir = fs.realpathSync.native(audioDir);
+  }
   const storage = ownedStorage(layout);
   const entries = [];
   for (const fixture of fixtures) {
     try {
-      entries.push(await prepareFixture(storage, fixture));
+      entries.push(await prepareFixture(storage, fixture, audioDir));
     } catch (error) {
       if (error.message.startsWith(`${fixture.fixtureId} (`)) throw error;
       throw sourceError(fixture, error.message);

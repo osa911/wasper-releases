@@ -28,9 +28,10 @@ It does not recreate the historical seven-runtime result.
 
 Use macOS on an Apple Silicon Mac. Install Node.js 22 or later, Xcode Command
 Line Tools, Git, Python 3, CMake, and FFmpeg (which provides both `ffmpeg` and
-`ffprobe`). Install Wasper 1.8.0 or a later release.
-The 1.8.0 release is the exact published baseline; a later release is accepted
-but reported as a later-release comparison.
+`ffprobe`). Install Wasper 1.5.0 or later. The smoke check confirms whether
+that app's native server supports the requests used by this benchmark. The
+report records the app version and native-server SHA-256. A different Mac or
+Wasper build can produce a different speed while following the same test.
 
 Run these commands from `benchmarks/parakeet-runtime`:
 
@@ -81,6 +82,26 @@ If doctor reports that Wasper.app is missing, complete these steps:
 2. Open the archive and move `Wasper.app` to `/Applications`.
 3. Run `npm run doctor` again.
 
+### Measure a clean local Wasper build
+
+The benchmark accepts an installed Wasper build even when its native-server
+hash differs from the published app with the same version. If you know that a
+local build came from a clean production source checkout, you can also record
+its 7- or 40-character Git commit:
+
+```sh
+export WASPER_BENCHMARK_LOCAL_BUILD_COMMIT=<source-commit>
+npm run doctor
+npm run smoke
+npm run benchmark -- full --accept-source-terms
+```
+
+The benchmark checks that `Wasper.app` contains a clean production build at
+that commit. It records `local-build`, the commit, and the packaged native
+server SHA-256 in the result. Without this optional variable, the server hash
+still identifies the measured build. Unset the variable for later runs that
+use another installed app.
+
 Connect the Mac to the internet before acquiring public models or corpus
 sources.
 
@@ -98,9 +119,14 @@ The extra 8 GiB is headroom, not an exact cache size. The current runtime lock
 lists about 5.7 GiB of downloads; the locally generated MLX derivative, corpus
 sources, build outputs, and run data add more storage.
 
-## Run the benchmark when prerequisites are available
+## Measure the runtimes
 
-Use the runnable public verification subset with:
+First run `npm run doctor` and fix any reported prerequisites. Then run
+`npm run smoke` to check that each runtime can transcribe one short recording
+before starting the measured run. Both commands are setup checks, not
+benchmark results.
+
+For a quicker short-recording verification run, use:
 
 ```sh
 npm run benchmark -- ready-short
@@ -111,11 +137,52 @@ automatic short cohort. Its output is labelled `partial-non-comparable`. Do
 not treat its metrics as the historical full comparison or infer long-recording
 performance from it.
 
-Run the full 243-short, 21-long corpus with:
+To measure the full 243-short, 21-long corpus, use:
 
 ```sh
 npm run benchmark -- full --accept-source-terms
 ```
+
+### Use audio you already have
+
+The benchmark reuses each prepared recording in its cache after checking the
+source, normalized WAV, and reference hashes. It does not download or
+normalize that recording again. You can also supply source audio before the
+first run. Create an audio directory anywhere you have space, including a
+mounted drive, and put each file at `<audio-directory>/<fixtureId>/source`.
+Use the `fixtureId` values in `corpus/short-fleurs.json` and
+`corpus/long-sources.json`. The file named `source` must contain the exact
+source bytes whose SHA-256 is listed as `sourceSha256`. For an archive source,
+use the selected audio member, not the whole archive.
+
+For example, after placing the audio files in a directory of your choice:
+
+```sh
+npm run smoke -- --audio-dir /path/to/audio-directory
+npm run benchmark -- full --accept-source-terms --audio-dir /path/to/audio-directory
+```
+
+The benchmark checks each local source before use. It downloads a source only
+when that fixture's `source` file is absent. If a local file is present but its
+hash differs, the run stops and names the file. References that are not yet in
+the verified benchmark cache still come from their public links. You can use
+`--audio-dir` with `recover-corpus` and `ready-short` too. The directory you
+provide stays outside the benchmark cache, and `npm run clean` does not remove
+it.
+
+The runner downloads or verifies the locked models and corpus, discards a
+warm-up request, then makes direct, complete-recording requests to each
+runtime in three sequential rotated passes. It supplies no language hint and
+times the response only; it does not include Wasper.app recording or paste
+latency. A full schedule contains 5,544 timed requests. Run it without other
+GPU-heavy work on the Mac.
+
+On completion, the command prints a `runDirectory`. Open `report.md` in that
+directory for short and long WER, CER, speed, and completed/expected request
+counts. Inspect `local-review-queue.json` there for failed requests before
+comparing runtimes. The report withholds long quality and speed when coverage
+is incomplete. Do not rank a partial row against a complete one or treat the
+`ready-short` verification report as the full comparison.
 
 `--accept-source-terms` acknowledges the terms and licenses recorded in the
 corpus manifests before any long-source download. Read those terms first. The
@@ -168,7 +235,10 @@ already over-cap runtime before scoring requests. The request result is reported
 as `post_response_phys_footprint`; it is not a peak-memory measurement during a
 request. The 8 GiB exclusion rule applies to those samples and to a runtime
 that explicitly reports a single allocation request above the cap. A runtime
-excluded for either condition stops for the rest of the run.
+excluded for either condition stops for the rest of the run. This is not a
+hard memory limit: a post-response sample cannot prevent an oversized
+allocation while a request is running. If a runtime fails before responding,
+inspect its recorded error and treat its coverage as incomplete.
 
 Each long recording is sent as one complete recording. The benchmark never
 chunks or merges long audio. A runtime may have its own documented long-audio

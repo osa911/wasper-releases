@@ -365,6 +365,94 @@ test('downloads a short fixture without accepting long-source terms and publishe
   );
 });
 
+test('uses a hash-matched local audio source without requesting that source', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'local-audio');
+  const fixtureDir = path.join(audioDir, f.fixture.fixtureId);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'source'), f.audio);
+
+  const { manifest } = await f.prepare({ audioDir });
+
+  assert.deepEqual(f.requests, ['/reference.txt']);
+  assert.equal(manifest.fixtures[0].source.sha256, hash(f.audio));
+  assert.equal(
+    hash(fs.readFileSync(path.join(f.layout.corpusRoot, manifest.fixtures[0].normalizedAudio.path))),
+    f.fixture.normalizedWavSha256
+  );
+});
+
+test('rejects a wrong local audio source without requesting a replacement', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'local-audio');
+  const fixtureDir = path.join(audioDir, f.fixture.fixtureId);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'source'), 'wrong audio');
+
+  await assert.rejects(f.prepare({ audioDir }), /local audio.*SHA-256 mismatch/i);
+  assert.deepEqual(f.requests, []);
+});
+
+test('reuses a prepared fixture without downloading or normalizing it again', async t => {
+  const f = await fixtureServer(t);
+  const first = await f.prepare();
+  f.requests.length = 0;
+  f.routes.clear();
+
+  const second = await f.prepare();
+
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(second.manifest.fixtures, first.manifest.fixtures);
+  assert.equal(
+    second.manifest.fixtures[0].normalizedAudio.path,
+    `fixtures/${f.fixture.fixtureId}/normalized.wav`
+  );
+});
+
+test('reuses a verified fixture from the older temporary-name cache layout', async t => {
+  const f = await fixtureServer(t);
+  const first = await f.prepare();
+  const original = path.join(f.layout.corpusRoot, 'fixtures', f.fixture.fixtureId);
+  const legacy = `${original}-0123456789abcdef0123456789abcdef`;
+  fs.renameSync(original, legacy);
+  f.requests.length = 0;
+  f.routes.clear();
+
+  const second = await f.prepare();
+
+  assert.deepEqual(f.requests, []);
+  assert.equal(
+    second.manifest.fixtures[0].normalizedAudio.path,
+    `fixtures/${f.fixture.fixtureId}-0123456789abcdef0123456789abcdef/normalized.wav`
+  );
+  assert.notEqual(
+    second.manifest.fixtures[0].normalizedAudio.path,
+    first.manifest.fixtures[0].normalizedAudio.path
+  );
+});
+
+test('a wrong prepared WAV fails rather than being used or replaced', async t => {
+  const f = await fixtureServer(t);
+  const first = await f.prepare();
+  const wavPath = path.join(f.layout.corpusRoot, first.manifest.fixtures[0].normalizedAudio.path);
+  fs.writeFileSync(wavPath, 'damaged');
+  f.requests.length = 0;
+
+  await assert.rejects(f.prepare(), /cached|normalized WAV SHA-256 mismatch/i);
+  assert.deepEqual(f.requests, []);
+  assert.equal(fs.readFileSync(wavPath, 'utf8'), 'damaged');
+});
+
+test('a missing local source falls back to the public download', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'local-audio');
+  fs.mkdirSync(audioDir);
+
+  await f.prepare({ audioDir });
+
+  assert.deepEqual(f.requests, ['/audio.wav', '/reference.txt']);
+});
+
 test('does not request a long source until terms are explicitly accepted', async t => {
   const f = await fixtureServer(t, 'long');
   for (const acceptSourceTerms of [undefined, false, 'true', 1]) {
@@ -729,6 +817,31 @@ test('the CLI routes public corpus preparation and source acceptance through the
   assert.ok(result.manifestPath.startsWith(f.layout.corpusRoot));
   assert.equal(JSON.parse(output.join('')).manifestPath, result.manifestPath);
   assert.equal(f.requests.length, 2);
+});
+
+test('the CLI accepts an audio directory and skips an available local source', async t => {
+  const f = await fixtureServer(t);
+  const audioDir = path.join(f.root, 'audio-inputs');
+  const fixtureDir = path.join(audioDir, f.fixture.fixtureId);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'source'), f.audio);
+  const { runCli } = require('../src/cli.cjs');
+
+  const result = await runCli(
+    [
+      'recover-corpus', '--cohort', 'short', '--cache-dir', f.layout.cacheRoot,
+      '--audio-dir', audioDir,
+    ],
+    {
+      homeDirectory: f.root,
+      stdout: { write() {} },
+      recoverCorpusImpl: options =>
+        preparePublicCorpus(options, { sourceManifests: f.sourceManifests }),
+    }
+  );
+
+  assert.ok(result.manifestPath.startsWith(f.layout.corpusRoot));
+  assert.deepEqual(f.requests, ['/reference.txt']);
 });
 
 test('a cache directory replaced during HTTP transfer leaves the external target intact and names the fixture', async t => {
