@@ -9,11 +9,23 @@ const { canonicalJson } = require('../asr-quality/manifest.cjs');
 const { OWNER_FILE, expectedOwnershipMarker, resolveLayout } = require('../config.cjs');
 const { ownedRuntimeStorage } = require('./owned-runtime-storage.cjs');
 
+class EvidenceWriteError extends Error {
+  constructor(filePath, cause) {
+    super(`Could not save benchmark evidence ${path.basename(filePath)}: ${cause.message}`, {
+      cause,
+    });
+    this.name = 'EvidenceWriteError';
+    this.code = 'EVIDENCE_WRITE_FAILED';
+  }
+}
+
 function cloneJson(value, label = 'value') {
   try {
     return JSON.parse(canonicalJson(value));
   } catch (error) {
-    throw new TypeError(`${label} must be plain JSON: ${error.message}`, { cause: error });
+    throw new TypeError(`${label} must be plain JSON: ${error.message}`, {
+      cause: error,
+    });
   }
 }
 
@@ -45,7 +57,9 @@ function resolveOwnedLayout(layout) {
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('not a regular file');
     marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
   } catch (error) {
-    throw new Error(`benchmark ownership marker is invalid: ${markerPath}`, { cause: error });
+    throw new Error(`benchmark ownership marker is invalid: ${markerPath}`, {
+      cause: error,
+    });
   }
   if (!isDeepStrictEqual(marker, expectedOwnershipMarker(resolved.cacheRoot))) {
     throw new Error(`benchmark ownership marker does not match this cache: ${markerPath}`);
@@ -69,8 +83,8 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
   const outputRoot = storage.directory(ownedLayout.outputRoot);
   const runDirectory = storage.directory(path.join(outputRoot, runId));
   const runPath = path.join(runDirectory, 'run.json');
-  const requestsDirectory = path.join(runDirectory, 'requests');
-  const activationsDirectory = path.join(runDirectory, 'activations');
+  const requestsDirectory = storage.directory(path.join(runDirectory, 'requests'));
+  const activationsDirectory = storage.directory(path.join(runDirectory, 'activations'));
   const existed = fs.existsSync(runPath);
 
   if (existed) {
@@ -95,7 +109,7 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
       }
       throw new Error(`cannot resume missing run ${runId}`);
     }
-    storage.writeExclusive(
+    writeBytes(
       runPath,
       `${JSON.stringify(
         {
@@ -106,12 +120,76 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
         },
         null,
         2
-      )}\n`
+      )}\n`,
+      { exclusive: true }
     );
   }
 
+  // Keep result persistence in Node, as in the original benchmark. Opening a
+  // private temporary file and publishing it only after a complete write keeps
+  // interrupted writes out of reports without spawning a writer per request.
+  function writeBytes(filePath, bytes, { exclusive = false } = {}) {
+    const temporaryPath = path.join(
+      path.dirname(filePath),
+      `.${path.basename(filePath)}.${crypto.randomUUID()}.tmp`
+    );
+    let descriptor;
+    let temporaryIdentity;
+    try {
+      storage.check();
+      try {
+        storage.regular(filePath);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      descriptor = fs.openSync(
+        temporaryPath,
+        fs.constants.O_WRONLY |
+          fs.constants.O_CREAT |
+          fs.constants.O_EXCL |
+          fs.constants.O_NOFOLLOW,
+        0o600
+      );
+      temporaryIdentity = storage.identity(fs.fstatSync(descriptor));
+      storage.check();
+      fs.writeFileSync(descriptor, bytes, 'utf8');
+      const completedDescriptor = descriptor;
+      descriptor = undefined;
+      fs.closeSync(completedDescriptor);
+      storage.check();
+      if (exclusive) {
+        fs.linkSync(temporaryPath, filePath);
+      } else {
+        fs.renameSync(temporaryPath, filePath);
+      }
+    } catch (error) {
+      throw new EvidenceWriteError(filePath, error);
+    } finally {
+      if (descriptor !== undefined) {
+        try {
+          fs.closeSync(descriptor);
+        } catch {}
+      }
+      if (temporaryIdentity !== undefined) {
+        // Only remove this operation's own temporary file in an unchanged
+        // directory. Leave it for inspection if the path has been replaced.
+        try {
+          storage.check();
+          const info = fs.lstatSync(temporaryPath);
+          if (
+            info.isFile() &&
+            !info.isSymbolicLink() &&
+            storage.identity(info) === temporaryIdentity
+          ) {
+            fs.unlinkSync(temporaryPath);
+          }
+        } catch {}
+      }
+    }
+  }
+
   function writeJson(filePath, value) {
-    storage.writeReplace(filePath, `${JSON.stringify(value, null, 2)}\n`);
+    writeBytes(filePath, `${JSON.stringify(value, null, 2)}\n`);
   }
 
   function requestPath(order) {
@@ -128,30 +206,29 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
       if (!Number.isSafeInteger(record?.sequence) || record.sequence < 0) {
         throw new TypeError('activation record sequence must be a non-negative integer');
       }
-      const directory = storage.directory(activationsDirectory);
       writeJson(
-        path.join(directory, `${String(record.sequence).padStart(4, '0')}.json`),
+        path.join(activationsDirectory, `${String(record.sequence).padStart(4, '0')}.json`),
         cloneJson(record, 'activation record')
       );
     },
     writeRequest(record) {
       const filePath = requestPath(record?.order);
-      if (fs.existsSync(filePath)) return;
-      storage.directory(requestsDirectory);
-      const temporaryPath = path.join(
-        requestsDirectory,
-        `.${path.basename(filePath)}.${crypto.randomUUID()}.tmp`
-      );
       try {
-        storage.writeExclusive(
-          temporaryPath,
-          `${JSON.stringify(cloneJson(record, 'request record'), null, 2)}\n`
-        );
-        storage.promote(temporaryPath, filePath);
+        if (fs.existsSync(filePath)) {
+          storage.regular(filePath);
+          readJson(filePath);
+          return;
+        }
+        writeBytes(filePath, `${JSON.stringify(cloneJson(record, 'request record'), null, 2)}\n`, {
+          exclusive: true,
+        });
       } catch (error) {
-        if (storage.files.has(temporaryPath)) storage.remove(temporaryPath);
-        if (/File exists/u.test(error.message)) return;
-        throw error;
+        if (error.cause?.code === 'EEXIST' && fs.existsSync(filePath)) {
+          storage.regular(filePath);
+          readJson(filePath);
+          return;
+        }
+        throw error instanceof EvidenceWriteError ? error : new EvidenceWriteError(filePath, error);
       }
     },
     readRequests() {
@@ -182,7 +259,7 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
           'private text artifact must be a lowercase Markdown filename and string'
         );
       }
-      storage.writeReplace(path.join(runDirectory, name), text);
+      writeBytes(path.join(runDirectory, name), text);
     },
     evidenceHash(records) {
       return hash(
@@ -194,4 +271,4 @@ function createEvidenceStore({ layout, runIdentity, resume = false, clock = () =
   });
 }
 
-module.exports = { createEvidenceStore };
+module.exports = { createEvidenceStore, EvidenceWriteError };

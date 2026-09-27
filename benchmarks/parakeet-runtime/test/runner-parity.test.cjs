@@ -72,7 +72,10 @@ function runIdentity() {
   };
 }
 
-function fakeAdapterFactory(events, { transcribeFailure, warmupFailure, sampleFootprintBytes, simulateIncompleteLong = true } = {}) {
+function fakeAdapterFactory(
+  events,
+  { transcribeFailure, warmupFailure, sampleFootprintBytes, simulateIncompleteLong = true } = {}
+) {
   let activeRuntime = null;
   const failedLongRequests = new Set();
   return runtime => {
@@ -120,7 +123,12 @@ function fakeAdapterFactory(events, { transcribeFailure, warmupFailure, sampleFo
         };
       },
       async warmup(fixture, requestOptions) {
-        events.push({ type: 'warmup', runtimeId: runtime.id, fixtureId: fixture.id, requestOptions });
+        events.push({
+          type: 'warmup',
+          runtimeId: runtime.id,
+          fixtureId: fixture.id,
+          requestOptions,
+        });
         const failure = warmupFailure?.({ runtime, fixture });
         if (failure !== undefined) return failure;
         return { rawTranscript: 'discarded warmup transcript', wallSeconds: 999 };
@@ -155,6 +163,54 @@ function fakeAdapterFactory(events, { transcribeFailure, warmupFailure, sampleFo
   };
 }
 
+test('a result save failure stops the run without converting successful transcription into an error', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  let injected = false;
+  const shouldFail = bytes => {
+    if (injected || typeof bytes !== 'string') return false;
+    let record;
+    try {
+      record = JSON.parse(bytes);
+    } catch {
+      return false;
+    }
+    if (record.order !== 1 || record.outcome !== 'success') return false;
+    injected = true;
+    return true;
+  };
+  const writeFileSync = fs.writeFileSync;
+  t.mock.method(fs, 'writeFileSync', function (file, bytes, ...args) {
+    if (shouldFail(bytes))
+      throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+    return writeFileSync.call(this, file, bytes, ...args);
+  });
+  await assert.rejects(
+    runRuntimeBenchmark({
+      layout,
+      manifest: publicManifest(layout),
+      runIdentity: runIdentity(),
+      adapterFactory: fakeAdapterFactory(events, {
+        simulateIncompleteLong: false,
+      }),
+    }),
+    error => error.code === 'EVIDENCE_WRITE_FAILED' && error.cause?.code === 'ENOSPC'
+  );
+  assert.equal(injected, true);
+  assert.equal(events.filter(event => event.type === 'transcribe').length, 2);
+  assert.equal(events.at(-1).type, 'stop');
+  const runDirectory = path.join(layout.outputRoot, fs.readdirSync(layout.outputRoot)[0]);
+  const files = fs
+    .readdirSync(path.join(runDirectory, 'requests'))
+    .filter(name => name.endsWith('.json'));
+  assert.equal(files.length, 1);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(runDirectory, 'requests', files[0]))).outcome,
+    'success'
+  );
+  assert.equal(fs.existsSync(path.join(runDirectory, 'report.md')), false);
+});
+
 test('runner preserves sequential automatic-language three-pass timing and partial-long rules', async t => {
   const layout = temporaryLayout(t);
   const events = [];
@@ -168,14 +224,17 @@ test('runner preserves sequential automatic-language three-pass timing and parti
   });
 
   const starts = events.filter(event => event.type === 'start').map(event => event.runtimeId);
-  assert.deepEqual(starts.filter((_, index) => index % 2 === 0), [
-    ...RUNTIME_DESCRIPTORS.map(runtime => runtime.id),
-    ...RUNTIME_DESCRIPTORS.slice(1).map(runtime => runtime.id),
-    RUNTIME_DESCRIPTORS[0].id,
-    ...RUNTIME_DESCRIPTORS.slice(2).map(runtime => runtime.id),
-    RUNTIME_DESCRIPTORS[0].id,
-    RUNTIME_DESCRIPTORS[1].id,
-  ]);
+  assert.deepEqual(
+    starts.filter((_, index) => index % 2 === 0),
+    [
+      ...RUNTIME_DESCRIPTORS.map(runtime => runtime.id),
+      ...RUNTIME_DESCRIPTORS.slice(1).map(runtime => runtime.id),
+      RUNTIME_DESCRIPTORS[0].id,
+      ...RUNTIME_DESCRIPTORS.slice(2).map(runtime => runtime.id),
+      RUNTIME_DESCRIPTORS[0].id,
+      RUNTIME_DESCRIPTORS[1].id,
+    ]
+  );
   assert.equal(events.filter(event => event.type === 'warmup').length, 42);
   assert.equal(events.filter(event => event.type === 'stop').length, 42);
   for (const event of events.filter(
@@ -262,9 +321,9 @@ test('runner excludes only the audio with a structured over-cap Metal allocation
   assert.equal(wasperRecords.filter(record => record.outcome === 'memory-excluded').length, 1);
   assert.equal(wasperRecords.filter(record => record.outcome === 'success').length, 5);
   assert.ok(
-    wasperRecords.filter(record => record.outcome === 'memory-excluded').every(
-      record => record.raw.memoryExclusion.runtimeDiagnostic.message === diagnostic
-    )
+    wasperRecords
+      .filter(record => record.outcome === 'memory-excluded')
+      .every(record => record.raw.memoryExclusion.runtimeDiagnostic.message === diagnostic)
   );
   assert.equal(
     events.filter(event => event.type === 'transcribe' && event.runtimeId === 'wasper-metal-int8')
@@ -311,8 +370,16 @@ test('a long memory breach excludes only that recording and later audio uses a f
   assert.equal(records.length, 9);
   assert.equal(records.filter(record => record.outcome === 'memory-excluded').length, 1);
   assert.equal(records.filter(record => record.outcome === 'success').length, 8);
-  assert.ok(records.filter(record => record.fixtureId === 'en-short-independent').every(record => record.outcome === 'success'));
-  assert.ok(records.filter(record => record.fixtureId === 'en-long-following').every(record => record.outcome === 'success'));
+  assert.ok(
+    records
+      .filter(record => record.fixtureId === 'en-short-independent')
+      .every(record => record.outcome === 'success')
+  );
+  assert.ok(
+    records
+      .filter(record => record.fixtureId === 'en-long-following')
+      .every(record => record.outcome === 'success')
+  );
 
   const activeTranscriptions = [];
   let active = false;
@@ -352,10 +419,12 @@ test('a short memory breach restarts the resident runtime without excluding the 
       transcribeFailure({ fixture }) {
         if (injected || fixture.id !== 'en-short-first') return undefined;
         injected = true;
-        return { error: {
-          type: 'runtime-error',
-          message: 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB',
-        } };
+        return {
+          error: {
+            type: 'runtime-error',
+            message: 'Metal error: insufficient memory; failed to allocate buffer, size = 9000 MiB',
+          },
+        };
       },
     }),
     now: () => new Date('2026-09-24T12:34:56.000Z'),
@@ -363,7 +432,11 @@ test('a short memory breach restarts the resident runtime without excluding the 
 
   assert.equal(run.records.filter(record => record.outcome === 'memory-excluded').length, 1);
   assert.equal(run.records.filter(record => record.outcome === 'success').length, 5);
-  assert.ok(run.records.filter(record => record.fixtureId === 'en-short-second').every(record => record.outcome === 'success'));
+  assert.ok(
+    run.records
+      .filter(record => record.fixtureId === 'en-short-second')
+      .every(record => record.outcome === 'success')
+  );
   assert.equal(events.filter(event => event.type === 'start').length, 4);
   assert.equal(events.filter(event => event.type === 'stop').length, 4);
 });
@@ -387,13 +460,23 @@ test('a post-response physical-footprint breach excludes only its long recording
     runtimeDescriptors: [RUNTIME_DESCRIPTORS[0]],
     adapterFactory: fakeAdapterFactory(events, {
       simulateIncompleteLong: false,
-      sampleFootprintBytes: fixture => fixture?.id === 'en-long-physical' ? 9 * 1024 ** 3 : 1024,
+      sampleFootprintBytes: fixture => (fixture?.id === 'en-long-physical' ? 9 * 1024 ** 3 : 1024),
     }),
     now: () => new Date('2026-09-24T12:34:56.000Z'),
   });
 
-  assert.equal(run.records.filter(record => record.fixtureId === 'en-long-physical' && record.outcome === 'memory-excluded').length, 3);
-  assert.equal(run.records.filter(record => record.fixtureId !== 'en-long-physical' && record.outcome === 'success').length, 6);
+  assert.equal(
+    run.records.filter(
+      record => record.fixtureId === 'en-long-physical' && record.outcome === 'memory-excluded'
+    ).length,
+    3
+  );
+  assert.equal(
+    run.records.filter(
+      record => record.fixtureId !== 'en-long-physical' && record.outcome === 'success'
+    ).length,
+    6
+  );
   assert.equal(events.filter(event => event.type === 'start').length, 9);
   assert.equal(events.filter(event => event.type === 'stop').length, 9);
 });
@@ -467,7 +550,9 @@ test('runner rotates a supplied valid runtime order after its first pass', async
     now: () => new Date('2026-09-24T12:34:56.000Z'),
   });
 
-  const starts = events.filter(event => event.type === 'start').map(event => event.runtimeId)
+  const starts = events
+    .filter(event => event.type === 'start')
+    .map(event => event.runtimeId)
     .filter((_, index) => index % 2 === 0);
   const passLength = RUNTIME_DESCRIPTORS.length;
 
@@ -505,7 +590,7 @@ test('runner rotates a supplied valid runtime order after its first pass', async
         'handy-gguf-q8',
         'nvidia-gguf-q8',
       ],
-    ],
+    ]
   );
 });
 
@@ -523,7 +608,11 @@ test('ready-short uses only ready runtime IDs and the automatic short cohort', a
 
   const result = await runCli(['benchmark', 'ready-short'], {
     homeDirectory: layout.homeDirectory,
-    stdout: { write(value) { writes.push(value); } },
+    stdout: {
+      write(value) {
+        writes.push(value);
+      },
+    },
     loadRuntimeLockImpl: () => runtimeLock,
     async bootstrapRuntimeImpl(runtimeId) {
       bootstrapped.push(runtimeId);
@@ -544,15 +633,24 @@ test('ready-short uses only ready runtime IDs and the automatic short cohort', a
     },
     async runRuntimeBenchmarkImpl(options) {
       benchmark = options;
-      return { runId: 'ready-short-run', runDirectory: path.join(layout.outputRoot, 'ready-short-run') };
+      return {
+        runId: 'ready-short-run',
+        runDirectory: path.join(layout.outputRoot, 'ready-short-run'),
+      };
     },
   });
 
   assert.deepEqual(bootstrapped, expectedRuntimeIds);
   assert.equal(recovered.cohort, 'short');
   assert.equal(recovered.acceptSourceTerms, false);
-  assert.deepEqual(smoke.runtimeDescriptors.map(runtime => runtime.id), expectedRuntimeIds);
-  assert.deepEqual(benchmark.runtimeDescriptors.map(runtime => runtime.id), expectedRuntimeIds);
+  assert.deepEqual(
+    smoke.runtimeDescriptors.map(runtime => runtime.id),
+    expectedRuntimeIds
+  );
+  assert.deepEqual(
+    benchmark.runtimeDescriptors.map(runtime => runtime.id),
+    expectedRuntimeIds
+  );
   assert.equal(benchmark.runIdentity.mode, 'ready-short');
   assert.equal(benchmark.runIdentity.verification, 'partial-non-comparable');
   assert.equal(result.mode, 'ready-short');
@@ -595,7 +693,10 @@ test('smoke bootstraps only ready runtimes against the automatic short corpus', 
   assert.deepEqual(bootstrapped, expectedRuntimeIds);
   assert.equal(recovered.cohort, 'short');
   assert.equal(recovered.acceptSourceTerms, false);
-  assert.deepEqual(smoke.runtimeDescriptors.map(runtime => runtime.id), expectedRuntimeIds);
+  assert.deepEqual(
+    smoke.runtimeDescriptors.map(runtime => runtime.id),
+    expectedRuntimeIds
+  );
   assert.equal(result.mode, 'ready-short');
   assert.equal(result.verification, 'partial-non-comparable');
 });

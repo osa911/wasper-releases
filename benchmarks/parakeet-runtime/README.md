@@ -186,6 +186,13 @@ comparing runtimes. The report withholds long quality and speed when coverage
 is incomplete. Do not rank a partial row against a complete one or treat the
 `ready-short` verification report as the full comparison.
 
+Each completed request is saved immediately by Node to the run's `requests/`
+directory. A temporary file is published only after the write completes.
+Saving results is outside the response timer. If a result cannot be saved,
+the benchmark stops with `EVIDENCE_WRITE_FAILED` and keeps earlier records.
+It does not count a disk-write failure as a transcription failure. A new run
+creates a separate run directory and preserves the interrupted run.
+
 `--accept-source-terms` acknowledges the terms and licenses recorded in the
 corpus manifests before any long-source download. Read those terms first. The
 flag does not authorize reuse beyond a source's license. The Dutch recording
@@ -257,6 +264,78 @@ chunks or merges long audio. A runtime may have its own documented long-audio
 strategy, but the benchmark does not supply one. When long coverage is
 incomplete, the result omits long quality and speed metrics rather than ranking
 partial coverage against complete coverage.
+
+## Reference performance and run duration
+
+These observations are examples, not minimum performance requirements or time
+guarantees. The complete seven-runtime run used an Apple M1 Pro with 16 GiB
+unified memory, Darwin 23.6.0, and Node 24.15.0. It measured 243 short and 21 long
+recordings in nine languages, with three sequential passes and cached models
+and audio. Results vary with hardware, software versions, and system load.
+
+Run `20260926T200529280Z-9ae2073cd42e` started on September 26, 2026 and
+finished on September 27. Benchmark revision: `c6fd709`. Wasper reported version
+1.8.0, but used a locally rebuilt binary, not the public 1.8.0 release binary.
+Its native-server SHA-256 was
+`cfdf876a127e2950a02b3ec86f80ef474bc65942048b7961f81b84388ae0408f`.
+The runtime-lock SHA-256 was
+`cf8c9add41c938c0f555250d7e5b222bf3b1d4a7b25ff92395bbb82a5960eb97`.
+The corpus SHA-256 was
+`dd13fc3bb9decd6434e56fff5ac482b3318d663a63e41e79542f96515118a8d2`.
+
+### Latest results by runtime
+
+Speed is the median per-request audio duration divided by response time,
+expressed as multiples of real time. Higher is faster. WER is pooled across
+reference words. Each runtime completed all 729 short requests.
+
+Wasper and Handy use the September 27 rerun
+`20260927T140008721Z-953975f360a6`; the other rows use the seven-runtime run
+identified above. Both sessions used the same benchmark revision, model cache,
+corpus, and three-pass protocol.
+
+| Runtime | Short speed | Short WER | Long speed | Long WER | Long completed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Wasper Metal INT8 | 84.87× | 9.33% | 133.69× | 26.52% | 63/63 |
+| MLX Community F32/BF16 | 27.12× | 8.36% | 29.34× | 35.16% | 63/63 |
+| Local MLX INT8 | 45.28× | 8.40% | 46.06× | 35.05% | 63/63 |
+| Handy Q8 | 57.86× | 8.63% | Not ranked | Not ranked | 27/63 |
+| NVIDIA Q8 | 46.98× | 8.59% | Not ranked | Not ranked | 60/63 |
+| Istupakov ONNX INT8 | 33.75× | 9.82% | Not ranked | Not ranked | 6/63 |
+| Fluid Core ML | 11.52× | 8.59% | 31.79× | 20.38% | 63/63 |
+
+The seven-runtime run saved all 5,544 request outcomes. The 96 long-request errors were Handy
+loading or allocation failures, NVIDIA empty output on the Dutch recording,
+and Istupakov attention-shape failures. Incomplete long cohorts are not ranked.
+Zero post-response memory exclusions did not mean peak usage stayed below
+8 GiB: monitoring observed roughly 23–26 GiB during failed Istupakov requests.
+See the memory measurement limitations above.
+
+### Elapsed time by engine
+
+These durations refer to the complete seven-runtime run, not the two-runtime
+rerun. The approximate durations include startup, discarded warm-ups, memory
+sampling, failed requests, and result saving. They are not inference-only
+timings. Downloads, initial setup, and the preliminary smoke check are excluded.
+
+| Runtime | Pass 1 | Pass 2 | Pass 3 | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Wasper Metal INT8 | 6m 31s | 6m 20s | 6m 19s | 19m 09s |
+| MLX Community F32/BF16 | 17m 08s | 17m 43s | 16m 57s | 51m 48s |
+| Local MLX INT8 | 10m 38s | 11m 11s | 10m 17s | 32m 07s |
+| Handy Q8 | 10m 26s | 10m 31s | 10m 10s | 31m 06s |
+| NVIDIA Q8 | 18m 13s | 18m 09s | 17m 56s | 54m 18s |
+| Istupakov ONNX INT8 | 13m 18s | 12m 13s | 11m 46s | 37m 17s |
+| Fluid Core ML | 18m 38s | 17m 53s | 17m 47s | 54m 18s |
+| Entire run | | | | 4h 40m 04s |
+
+Durations were reconstructed from request-file modification times in execution
+order. Each engine interval starts at the preceding engine's last saved result
+and ends at its own last saved result. The first interval starts at `createdAt`
+in `run.json`; the entire run ends at the `report.md` modification time.
+Transition overhead belongs to the next engine. Totals use unrounded durations,
+so rounded pass values may not sum exactly. File-copy operations can change
+modification times; this method requires the original run directory.
 
 ## Public runtime and model sources
 

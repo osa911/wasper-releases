@@ -8,7 +8,7 @@ const { canonicalJson } = require('../asr-quality/manifest.cjs');
 const { assertCanonicalScore, scoreTranscript } = require('../asr-quality/scoring.cjs');
 const { isInside, resolveLayout } = require('../config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./constants.cjs');
-const { createEvidenceStore } = require('./evidence-store.cjs');
+const { createEvidenceStore, EvidenceWriteError } = require('./evidence-store.cjs');
 const { aggregateRuntimeEvidence } = require('./aggregation.cjs');
 const { writePublicReport } = require('./report.cjs');
 const { projectPublicEvidence } = require('./reporting/public-projection.cjs');
@@ -22,8 +22,8 @@ class PhysicalFootprintCapError extends Error {
     capBytes,
     footprint,
     metric = 'post_response_phys_footprint',
-    observedBytes =
-      footprint?.postResponsePhysicalFootprintBytes ?? footprint?.post_response_phys_footprint,
+    observedBytes = footprint?.postResponsePhysicalFootprintBytes ??
+      footprint?.post_response_phys_footprint,
     code = 'PHYSICAL_FOOTPRINT_CAP_EXCEEDED',
     name = 'PhysicalFootprintCapError',
   }) {
@@ -54,7 +54,10 @@ function resolveRuntimeDescriptors(runtimeDescriptors = RUNTIME_DESCRIPTORS) {
     RUNTIME_DESCRIPTORS.map(descriptor => [descriptor.id, descriptor])
   );
   const resolved = runtimeDescriptors.map(runtime => descriptorsById.get(runtime?.id));
-  if (resolved.includes(undefined) || new Set(resolved.map(runtime => runtime.id)).size !== resolved.length) {
+  if (
+    resolved.includes(undefined) ||
+    new Set(resolved.map(runtime => runtime.id)).size !== resolved.length
+  ) {
     throw new TypeError('runtimeDescriptors must contain unique canonical runtime descriptors');
   }
   return resolved;
@@ -65,7 +68,9 @@ function resolveRuntimeOrder(runtimeOrder, runtimeDescriptors) {
   if (!Array.isArray(runtimeOrder) || runtimeOrder.length !== runtimeDescriptors.length) {
     throw new TypeError('runtimeOrder must contain every selected runtime exactly once');
   }
-  const descriptorsById = new Map(runtimeDescriptors.map(descriptor => [descriptor.id, descriptor]));
+  const descriptorsById = new Map(
+    runtimeDescriptors.map(descriptor => [descriptor.id, descriptor])
+  );
   const resolved = runtimeOrder.map(runtimeId => descriptorsById.get(runtimeId));
   if (resolved.includes(undefined) || new Set(runtimeOrder).size !== runtimeOrder.length) {
     throw new TypeError('runtimeOrder must contain every selected runtime exactly once');
@@ -112,7 +117,9 @@ function hydratePublicFixtures(manifest, layout) {
       typeof fixture.fixtureId !== 'string' ||
       typeof fixture.language !== 'string'
     ) {
-      throw new TypeError('verified public fixture must identify its cohort, language, and fixture id');
+      throw new TypeError(
+        'verified public fixture must identify its cohort, language, and fixture id'
+      );
     }
     const audioPath = resolveCorpusFile(
       layout,
@@ -260,7 +267,9 @@ function postResponsePhysicalFootprintBytes(footprint) {
   const bytes =
     footprint?.postResponsePhysicalFootprintBytes ?? footprint?.post_response_phys_footprint;
   if (!Number.isFinite(bytes) || bytes <= 0) {
-    throw new TypeError('post-response physical footprint evidence must include a positive byte value');
+    throw new TypeError(
+      'post-response physical footprint evidence must include a positive byte value'
+    );
   }
   return bytes;
 }
@@ -382,7 +391,12 @@ async function sampleFootprintAfterTiming(adapter) {
   throw lastError;
 }
 
-async function transcribeThenSamplePhysicalFootprint({ adapter, fixture, capBytes, requestOptions }) {
+async function transcribeThenSamplePhysicalFootprint({
+  adapter,
+  fixture,
+  capBytes,
+  requestOptions,
+}) {
   let lastFootprint = null;
   try {
     // `sampleFootprint()` invokes macOS `top`, which perturbs short-request
@@ -499,8 +513,17 @@ async function runRuntimeBenchmark({
             capBytes: maxPhysicalFootprintBytes,
             requestOptions: { languagePolicy: { mode: 'automatic', languageHint: null } },
           });
-          const score = scoreTranscript(fixture.reference.text, response.rawTranscript, fixture.language);
-          assertCanonicalScore(score, fixture.reference.text, response.rawTranscript, fixture.language);
+          const score = scoreTranscript(
+            fixture.reference.text,
+            response.rawTranscript,
+            fixture.language
+          );
+          assertCanonicalScore(
+            score,
+            fixture.reference.text,
+            response.rawTranscript,
+            fixture.language
+          );
           const record = {
             ...item,
             outcome: 'success',
@@ -514,6 +537,7 @@ async function runRuntimeBenchmark({
           store.writeRequest(record);
           byOrder.set(item.order, record);
         } catch (error) {
+          if (error instanceof EvidenceWriteError) throw error;
           const record = isPhysicalFootprintCapError(error)
             ? memoryExcludedRecord(item, fixture, error)
             : errorRecord(item, fixture, error);
@@ -529,6 +553,7 @@ async function runRuntimeBenchmark({
         consumed += 1;
       }
     } catch (error) {
+      if (error instanceof EvidenceWriteError) throw error;
       activation.error = isPhysicalFootprintCapError(error)
         ? {
             name: error.name,
@@ -564,7 +589,10 @@ async function runRuntimeBenchmark({
         await adapter.stop();
       } catch (error) {
         if (error?.message !== 'stop requires an active adapter') {
-          activation.stopError = { name: error?.name ?? 'Error', message: error?.message ?? String(error) };
+          activation.stopError = {
+            name: error?.name ?? 'Error',
+            message: error?.message ?? String(error),
+          };
           store.writeActivation(activation);
           throw error;
         }
@@ -606,7 +634,10 @@ async function runRuntimeBenchmark({
         const cohort = fixtures.get(measured[index].fixtureId).cohort;
         let end = index + 1;
         if (cohort === 'short') {
-          while (end < measured.length && fixtures.get(measured[end].fixtureId).cohort === 'short') {
+          while (
+            end < measured.length &&
+            fixtures.get(measured[end].fixtureId).cohort === 'short'
+          ) {
             end += 1;
           }
         }
