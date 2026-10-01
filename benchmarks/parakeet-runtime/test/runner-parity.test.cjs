@@ -623,6 +623,117 @@ test('smoke shutdown failure saves a partial scored report without starting anot
   assert.match(fs.readFileSync(path.join(caught.runDirectory, 'report.md'), 'utf8'), /shutdown/);
 });
 
+test('a fatal bootstrap error remains primary when corpus recovery also fails', async t => {
+  const layout = temporaryLayout(t);
+  const bootstrapError = Object.assign(new Error('bootstrap disk full'), { code: 'ENOSPC' });
+  const recoveryError = Object.assign(new Error('corpus manifest write failed'), { code: 'EIO' });
+  let bootstraps = 0;
+  await assert.rejects(
+    runCli(['benchmark', 'full'], {
+      homeDirectory: layout.homeDirectory,
+      loadRuntimeLockImpl: loadRuntimeLock,
+      async bootstrapRuntimeImpl() {
+        bootstraps += 1;
+        throw bootstrapError;
+      },
+      async recoverCorpusImpl() {
+        throw recoveryError;
+      },
+      async smokeRuntimeAdaptersImpl() {
+        assert.fail('smoke must not start after fatal setup');
+      },
+      async runRuntimeBenchmarkImpl() {
+        assert.fail('scoring must not start without a corpus');
+      },
+    }),
+    error => {
+      assert.equal(error, bootstrapError);
+      assert.equal(error.code, 'ENOSPC');
+      assert.equal(error.reportError, recoveryError);
+      return true;
+    }
+  );
+  assert.equal(bootstraps, 1);
+});
+
+for (const failurePhase of ['shutdown', 'health']) {
+  test(`a smoke evidence save failure retains the ${failurePhase} diagnostic`, async t => {
+    const layout = temporaryLayout(t);
+    const manifest = publicManifest(layout);
+    const events = [];
+    const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+    const { smokeRuntimeAdapters } = require('../src/runtime/smoke.cjs');
+    const runtimeError =
+      failurePhase === 'shutdown'
+        ? new AdapterTimeoutError('shutdown', 10)
+        : new Error('simulated unhealthy runtime');
+    const writeFileSync = fs.writeFileSync;
+    let injected = false;
+    t.mock.method(fs, 'writeFileSync', function (file, bytes, ...args) {
+      let data;
+      try {
+        data = JSON.parse(bytes);
+      } catch {}
+      if (
+        !injected &&
+        data?.schema === 'wasper.parakeet-runtime-benchmark.local-smoke.v1' &&
+        data?.status === 'failed'
+      ) {
+        injected = true;
+        throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+      }
+      return writeFileSync.call(this, file, bytes, ...args);
+    });
+    let caught;
+    try {
+      await runCli(['benchmark', 'full'], {
+        homeDirectory: layout.homeDirectory,
+        loadRuntimeLockImpl: loadRuntimeLock,
+        async bootstrapRuntimeImpl() {},
+        async recoverCorpusImpl() {
+          return { manifest };
+        },
+        smokeRuntimeAdaptersImpl(options) {
+          return smokeRuntimeAdapters({
+            ...options,
+            createRuntimeAdapterImpl(id) {
+              const adapter = adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+              const transcribe = adapter.transcribe;
+              adapter.transcribe = (fixture, options) =>
+                transcribe({ ...fixture, reference: { text: 'alpha bravo' } }, options);
+              adapter[failurePhase === 'shutdown' ? 'stop' : 'health'] = async () => {
+                throw runtimeError;
+              };
+              return adapter;
+            },
+          });
+        },
+        createRuntimeAdapterImpl() {
+          assert.fail('scoring must not start after a smoke evidence save failure');
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(injected, true);
+    if (failurePhase === 'shutdown') {
+      assert.equal(caught, runtimeError);
+      assert.equal(caught.reportError?.code, 'EVIDENCE_WRITE_FAILED');
+      assert.equal(caught.reportError?.cause?.code, 'ENOSPC');
+    } else {
+      assert.equal(caught?.code, 'EVIDENCE_WRITE_FAILED');
+      assert.equal(caught.cause?.code, 'ENOSPC');
+    }
+    assert.equal(caught.smokeResult?.cells[0].error.message, runtimeError.message);
+    assert.ok(caught.evidencePath);
+    assert.equal(events.filter(event => event.type === 'start').length, 1);
+    const diagnostics = JSON.parse(
+      fs.readFileSync(path.join(caught.runDirectory, 'local-review-queue.json'))
+    );
+    assert.equal(diagnostics.runtimeFailures[0].error.message, runtimeError.message);
+  });
+}
+
 for (const saveStage of ['run identity', 'report checkpoint']) {
   test(`smoke shutdown remains the primary error when saving the ${saveStage} fails`, async t => {
     const layout = temporaryLayout(t);

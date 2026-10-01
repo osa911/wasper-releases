@@ -158,7 +158,13 @@ async function smokeRuntimeAdapters({
       try {
         persist();
       } catch (writeError) {
-        if (!stopsBenchmark(failure)) failure = writeError;
+        if (stopsBenchmark(failure)) {
+          failure.reportError ??= writeError;
+        } else {
+          writeError.evidencePath = evidencePath;
+          writeError.smokeResult = failure.smokeResult;
+          failure = writeError;
+        }
       }
       if (!allowRuntimeFailures || cell.stopError || stopsBenchmark(failure)) throw failure;
       continue;

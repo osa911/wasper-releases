@@ -228,12 +228,19 @@ async function runBenchmark({
       }
     }
   }
-  const prepared = await recoverCorpus({
-    layout: plan.layout,
-    cohort,
-    acceptSourceTerms: plan.acceptSourceTerms,
-    ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
-  });
+  let prepared;
+  try {
+    prepared = await recoverCorpus({
+      layout: plan.layout,
+      cohort,
+      acceptSourceTerms: plan.acceptSourceTerms,
+      ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
+    });
+  } catch (error) {
+    if (!terminalFailure) throw error;
+    terminalFailure.reportError ??= error;
+    throw terminalFailure;
+  }
   if (!terminalFailure) {
     const available = runtimeDescriptors.filter(
       runtime => !runtimeFailures.some(failure => failure.runtimeId === runtime.id)
