@@ -416,7 +416,21 @@ async function transcribeThenSamplePhysicalFootprint({
   }
 }
 
-async function runRuntimeBenchmark({
+async function runRuntimeBenchmark(options) {
+  try {
+    return await executeRuntimeBenchmark(options);
+  } catch (error) {
+    // Preflight may already have found an unsafe live process. Initialization
+    // failures must not hide that warning behind a secondary evidence error.
+    const failure = options?.terminalFailure;
+    if (!failure || error === failure) throw error;
+    failure.reportError ??= error;
+    if (error.runDirectory) failure.runDirectory ??= error.runDirectory;
+    throw failure;
+  }
+}
+
+async function executeRuntimeBenchmark({
   layout,
   manifest,
   runIdentity,
@@ -655,8 +669,8 @@ async function runRuntimeBenchmark({
   }
 
   try {
-    writeReport('running');
     if (terminalFailure) throw terminalFailure;
+    writeReport('running');
     for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
       for (const cell of rotate(baseRuntimeOrder, pass - 1)) {
         const items = schedule.filter(item => item.pass === pass && item.cellId === cell.id);

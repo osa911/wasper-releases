@@ -623,6 +623,73 @@ test('smoke shutdown failure saves a partial scored report without starting anot
   assert.match(fs.readFileSync(path.join(caught.runDirectory, 'report.md'), 'utf8'), /shutdown/);
 });
 
+for (const saveStage of ['run identity', 'report checkpoint']) {
+  test(`smoke shutdown remains the primary error when saving the ${saveStage} fails`, async t => {
+    const layout = temporaryLayout(t);
+    const manifest = publicManifest(layout);
+    const events = [];
+    const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+    const { smokeRuntimeAdapters } = require('../src/runtime/smoke.cjs');
+    const shutdownError = new AdapterTimeoutError('shutdown', 10);
+    const writeFileSync = fs.writeFileSync;
+    let injected = false;
+    t.mock.method(fs, 'writeFileSync', function (file, bytes, ...args) {
+      let data;
+      try {
+        data = JSON.parse(bytes);
+      } catch {}
+      const matches =
+        saveStage === 'run identity'
+          ? data?.schema === 'wasper.parakeet-runtime-benchmark.private-run-evidence.v1' &&
+            data?.identity?.schema === 'wasper.parakeet-runtime-benchmark.public-run.v1'
+          : data?.evidenceHash !== undefined && data?.completion !== undefined;
+      if (!injected && matches) {
+        injected = true;
+        throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+      }
+      return writeFileSync.call(this, file, bytes, ...args);
+    });
+    let caught;
+    try {
+      await runCli(['benchmark', 'full'], {
+        homeDirectory: layout.homeDirectory,
+        loadRuntimeLockImpl: loadRuntimeLock,
+        async bootstrapRuntimeImpl() {},
+        async recoverCorpusImpl() {
+          return { manifest };
+        },
+        smokeRuntimeAdaptersImpl(options) {
+          return smokeRuntimeAdapters({
+            ...options,
+            createRuntimeAdapterImpl(id) {
+              const adapter = adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+              const transcribe = adapter.transcribe;
+              adapter.transcribe = (fixture, options) =>
+                transcribe({ ...fixture, reference: { text: 'alpha bravo' } }, options);
+              adapter.stop = async () => {
+                throw shutdownError;
+              };
+              return adapter;
+            },
+          });
+        },
+        createRuntimeAdapterImpl() {
+          assert.fail('scoring must not start after unsafe cleanup');
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(injected, true);
+    assert.equal(caught, shutdownError);
+    assert.equal(caught.operation, 'shutdown');
+    assert.equal(caught.reportError?.code, 'EVIDENCE_WRITE_FAILED');
+    assert.equal(caught.reportError?.cause?.code, 'ENOSPC');
+    assert.equal(events.filter(event => event.type === 'start').length, 1);
+    if (saveStage === 'report checkpoint') assert.ok(caught.runDirectory);
+  });
+}
+
 test('shutdown failure after scoring preserves completed work and leaves the next engine pending', async t => {
   const layout = temporaryLayout(t);
   const events = [];
