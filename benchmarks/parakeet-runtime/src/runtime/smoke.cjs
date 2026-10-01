@@ -7,6 +7,7 @@ const { isInside, resolveLayout, writeOwnershipMarker } = require('../config.cjs
 const { createRuntimeAdapter } = require('./adapters/index.cjs');
 const { RUNTIME_DESCRIPTORS } = require('./constants.cjs');
 const { createEvidenceStore } = require('./evidence-store.cjs');
+const { stopsBenchmark } = require('./failure-policy.cjs');
 
 function smokeFixture(manifest, layout) {
   const fixture = manifest?.fixtures?.find(item => item.cohort === 'short');
@@ -57,6 +58,7 @@ async function smokeRuntimeAdapters({
   runtimeLock,
   runtimeDescriptors = RUNTIME_DESCRIPTORS,
   createRuntimeAdapterImpl = createRuntimeAdapter,
+  allowRuntimeFailures = false,
   now,
 }) {
   const resolvedLayout = resolveLayout({
@@ -140,29 +142,46 @@ async function smokeRuntimeAdapters({
           await adapter.stop();
           cell.stopped = true;
         } catch (error) {
+          error.operation ??= 'shutdown';
           cell.stopError = serializeError(error, phase);
-          if (!failure) {
-            failure = error;
-            cell.error = cell.stopError;
-          }
+          // Cleanup failure takes precedence over the original runtime error.
+          failure = error;
+          cell.error ??= cell.stopError;
         }
       }
     }
     cell.status = failure ? 'failed' : 'ok';
     if (failure) {
       evidence.status = 'failed';
-      persist();
       failure.evidencePath = evidencePath;
-      throw failure;
+      failure.smokeResult = { evidencePath, cells: evidence.cells };
+      try {
+        persist();
+      } catch (writeError) {
+        if (stopsBenchmark(failure)) {
+          failure.reportError ??= writeError;
+        } else {
+          writeError.evidencePath = evidencePath;
+          writeError.smokeResult = failure.smokeResult;
+          failure = writeError;
+        }
+      }
+      if (!allowRuntimeFailures || cell.stopError || stopsBenchmark(failure)) throw failure;
+      continue;
     }
     persist();
   }
 
-  evidence.status = 'passed';
+  evidence.status = evidence.cells.some(cell => cell.status === 'failed') ? 'failed' : 'passed';
   persist();
   return {
     evidencePath,
-    cells: evidence.cells.map(({ runtimeId, status }) => ({ runtimeId, status })),
+    cells: evidence.cells.map(({ runtimeId, status, error, stopError }) => ({
+      runtimeId,
+      status,
+      ...(error ? { error } : {}),
+      ...(stopError ? { stopError } : {}),
+    })),
   };
 }
 

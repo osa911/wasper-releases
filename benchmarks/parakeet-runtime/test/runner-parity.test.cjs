@@ -208,7 +208,11 @@ test('a result save failure stops the run without converting successful transcri
     JSON.parse(fs.readFileSync(path.join(runDirectory, 'requests', files[0]))).outcome,
     'success'
   );
-  assert.equal(fs.existsSync(path.join(runDirectory, 'report.md')), false);
+  const evidence = JSON.parse(fs.readFileSync(path.join(runDirectory, 'public-evidence.json')));
+  assert.equal(evidence.completion.state, 'interrupted');
+  assert.equal(evidence.completion.recordedRequests, 1);
+  assert.equal(evidence.completion.pendingRequests, 41);
+  assert.match(fs.readFileSync(path.join(runDirectory, 'report.md'), 'utf8'), /interrupted/i);
 });
 
 test('runner preserves sequential automatic-language three-pass timing and partial-long rules', async t => {
@@ -504,6 +508,360 @@ test('failed startup cleanup aborts before launching another activation', async 
     error => error.code === 'ETIMEDOUT' && error.operation === 'shutdown'
   );
   assert.equal(starts, 1);
+  const runDirectory = path.join(layout.outputRoot, fs.readdirSync(layout.outputRoot)[0]);
+  const evidence = JSON.parse(fs.readFileSync(path.join(runDirectory, 'public-evidence.json')));
+  assert.equal(evidence.completion.state, 'interrupted');
+  assert.equal(evidence.completion.pendingRequests, 6);
+  assert.equal(evidence.completion.interruption.operation, 'shutdown');
+  assert.match(fs.readFileSync(path.join(runDirectory, 'report.md'), 'utf8'), /shutdown/);
+});
+
+for (const phase of ['bootstrap', 'smoke']) {
+  test(`${phase} failure leaves that runtime in the report and completes the other six`, async t => {
+    const layout = temporaryLayout(t);
+    const manifest = publicManifest(layout);
+    const events = [];
+    const failedId = RUNTIME_DESCRIPTORS[0].id;
+    const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+    const { smokeRuntimeAdapters } = require('../src/runtime/smoke.cjs');
+    const result = await runCli(['benchmark', 'full'], {
+      homeDirectory: layout.homeDirectory,
+      loadRuntimeLockImpl: loadRuntimeLock,
+      async bootstrapRuntimeImpl(id) {
+        if (phase === 'bootstrap' && id === failedId) throw new Error('missing runtime dependency');
+      },
+      async recoverCorpusImpl() {
+        return { manifest };
+      },
+      smokeRuntimeAdaptersImpl(options) {
+        return smokeRuntimeAdapters({
+          ...options,
+          createRuntimeAdapterImpl(id) {
+            const adapter = adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+            const transcribe = adapter.transcribe;
+            adapter.transcribe = (fixture, options) =>
+              transcribe({ ...fixture, reference: { text: 'alpha bravo' } }, options);
+            if (phase === 'smoke' && id === failedId) {
+              adapter.health = async () => {
+                throw new Error('runtime crashed in smoke');
+              };
+            }
+            return adapter;
+          },
+        });
+      },
+      createRuntimeAdapterImpl(id) {
+        assert.notEqual(id, failedId, 'failed preflight runtime must not be launched for scoring');
+        return adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+      },
+    });
+    const evidence = JSON.parse(
+      fs.readFileSync(path.join(result.runDirectory, 'public-evidence.json'))
+    );
+    assert.equal(evidence.records.length, 42);
+    assert.equal(evidence.records.filter(record => record.status === 'success').length, 36);
+    assert.equal(
+      evidence.records.filter(record => record.runtimeId === failedId && record.status === 'error')
+        .length,
+      6
+    );
+    assert.equal(evidence.completion.state, 'completed');
+    assert.equal(evidence.completion.pendingRequests, 0);
+    assert.equal(evidence.completion.runtimeFailures[0].phase, phase);
+    const report = fs.readFileSync(path.join(result.runDirectory, 'report.md'), 'utf8');
+    assert.match(report, /Wasper Parakeet GPU/);
+    assert.match(report, new RegExp(phase));
+  });
+}
+
+test('smoke shutdown failure saves a partial scored report without starting another engine', async t => {
+  const layout = temporaryLayout(t);
+  const manifest = publicManifest(layout);
+  const events = [];
+  const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+  const { smokeRuntimeAdapters } = require('../src/runtime/smoke.cjs');
+  let caught;
+  try {
+    await runCli(['benchmark', 'full'], {
+      homeDirectory: layout.homeDirectory,
+      loadRuntimeLockImpl: loadRuntimeLock,
+      async bootstrapRuntimeImpl() {},
+      async recoverCorpusImpl() {
+        return { manifest };
+      },
+      smokeRuntimeAdaptersImpl(options) {
+        return smokeRuntimeAdapters({
+          ...options,
+          createRuntimeAdapterImpl(id) {
+            const adapter = adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+            const transcribe = adapter.transcribe;
+            adapter.transcribe = (fixture, options) =>
+              transcribe({ ...fixture, reference: { text: 'alpha bravo' } }, options);
+            adapter.stop = async () => {
+              throw new AdapterTimeoutError('shutdown', 10);
+            };
+            return adapter;
+          },
+        });
+      },
+      createRuntimeAdapterImpl() {
+        assert.fail('scoring must not start after unsafe cleanup');
+      },
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.operation, 'shutdown');
+  assert.equal(events.filter(event => event.type === 'start').length, 1);
+  assert.ok(caught.runDirectory);
+  const evidence = JSON.parse(
+    fs.readFileSync(path.join(caught.runDirectory, 'public-evidence.json'))
+  );
+  assert.equal(evidence.completion.state, 'interrupted');
+  assert.equal(evidence.completion.recordedRequests, 0);
+  assert.equal(evidence.completion.pendingRequests, 42);
+  assert.match(fs.readFileSync(path.join(caught.runDirectory, 'report.md'), 'utf8'), /shutdown/);
+});
+
+test('a fatal bootstrap error remains primary when corpus recovery also fails', async t => {
+  const layout = temporaryLayout(t);
+  const bootstrapError = Object.assign(new Error('bootstrap disk full'), { code: 'ENOSPC' });
+  const recoveryError = Object.assign(new Error('corpus manifest write failed'), { code: 'EIO' });
+  let bootstraps = 0;
+  await assert.rejects(
+    runCli(['benchmark', 'full'], {
+      homeDirectory: layout.homeDirectory,
+      loadRuntimeLockImpl: loadRuntimeLock,
+      async bootstrapRuntimeImpl() {
+        bootstraps += 1;
+        throw bootstrapError;
+      },
+      async recoverCorpusImpl() {
+        throw recoveryError;
+      },
+      async smokeRuntimeAdaptersImpl() {
+        assert.fail('smoke must not start after fatal setup');
+      },
+      async runRuntimeBenchmarkImpl() {
+        assert.fail('scoring must not start without a corpus');
+      },
+    }),
+    error => {
+      assert.equal(error, bootstrapError);
+      assert.equal(error.code, 'ENOSPC');
+      assert.equal(error.reportError, recoveryError);
+      return true;
+    }
+  );
+  assert.equal(bootstraps, 1);
+});
+
+for (const failurePhase of ['shutdown', 'health']) {
+  test(`a smoke evidence save failure retains the ${failurePhase} diagnostic`, async t => {
+    const layout = temporaryLayout(t);
+    const manifest = publicManifest(layout);
+    const events = [];
+    const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+    const { smokeRuntimeAdapters } = require('../src/runtime/smoke.cjs');
+    const runtimeError =
+      failurePhase === 'shutdown'
+        ? new AdapterTimeoutError('shutdown', 10)
+        : new Error('simulated unhealthy runtime');
+    const writeFileSync = fs.writeFileSync;
+    let injected = false;
+    t.mock.method(fs, 'writeFileSync', function (file, bytes, ...args) {
+      let data;
+      try {
+        data = JSON.parse(bytes);
+      } catch {}
+      if (
+        !injected &&
+        data?.schema === 'wasper.parakeet-runtime-benchmark.local-smoke.v1' &&
+        data?.status === 'failed'
+      ) {
+        injected = true;
+        throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+      }
+      return writeFileSync.call(this, file, bytes, ...args);
+    });
+    let caught;
+    try {
+      await runCli(['benchmark', 'full'], {
+        homeDirectory: layout.homeDirectory,
+        loadRuntimeLockImpl: loadRuntimeLock,
+        async bootstrapRuntimeImpl() {},
+        async recoverCorpusImpl() {
+          return { manifest };
+        },
+        smokeRuntimeAdaptersImpl(options) {
+          return smokeRuntimeAdapters({
+            ...options,
+            createRuntimeAdapterImpl(id) {
+              const adapter = adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+              const transcribe = adapter.transcribe;
+              adapter.transcribe = (fixture, options) =>
+                transcribe({ ...fixture, reference: { text: 'alpha bravo' } }, options);
+              adapter[failurePhase === 'shutdown' ? 'stop' : 'health'] = async () => {
+                throw runtimeError;
+              };
+              return adapter;
+            },
+          });
+        },
+        createRuntimeAdapterImpl() {
+          assert.fail('scoring must not start after a smoke evidence save failure');
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(injected, true);
+    if (failurePhase === 'shutdown') {
+      assert.equal(caught, runtimeError);
+      assert.equal(caught.reportError?.code, 'EVIDENCE_WRITE_FAILED');
+      assert.equal(caught.reportError?.cause?.code, 'ENOSPC');
+    } else {
+      assert.equal(caught?.code, 'EVIDENCE_WRITE_FAILED');
+      assert.equal(caught.cause?.code, 'ENOSPC');
+    }
+    assert.equal(caught.smokeResult?.cells[0].error.message, runtimeError.message);
+    assert.ok(caught.evidencePath);
+    assert.equal(events.filter(event => event.type === 'start').length, 1);
+    const diagnostics = JSON.parse(
+      fs.readFileSync(path.join(caught.runDirectory, 'local-review-queue.json'))
+    );
+    assert.equal(diagnostics.runtimeFailures[0].error.message, runtimeError.message);
+  });
+}
+
+for (const saveStage of ['run identity', 'report checkpoint']) {
+  test(`smoke shutdown remains the primary error when saving the ${saveStage} fails`, async t => {
+    const layout = temporaryLayout(t);
+    const manifest = publicManifest(layout);
+    const events = [];
+    const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+    const { smokeRuntimeAdapters } = require('../src/runtime/smoke.cjs');
+    const shutdownError = new AdapterTimeoutError('shutdown', 10);
+    const writeFileSync = fs.writeFileSync;
+    let injected = false;
+    t.mock.method(fs, 'writeFileSync', function (file, bytes, ...args) {
+      let data;
+      try {
+        data = JSON.parse(bytes);
+      } catch {}
+      const matches =
+        saveStage === 'run identity'
+          ? data?.schema === 'wasper.parakeet-runtime-benchmark.private-run-evidence.v1' &&
+            data?.identity?.schema === 'wasper.parakeet-runtime-benchmark.public-run.v1'
+          : data?.evidenceHash !== undefined && data?.completion !== undefined;
+      if (!injected && matches) {
+        injected = true;
+        throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+      }
+      return writeFileSync.call(this, file, bytes, ...args);
+    });
+    let caught;
+    try {
+      await runCli(['benchmark', 'full'], {
+        homeDirectory: layout.homeDirectory,
+        loadRuntimeLockImpl: loadRuntimeLock,
+        async bootstrapRuntimeImpl() {},
+        async recoverCorpusImpl() {
+          return { manifest };
+        },
+        smokeRuntimeAdaptersImpl(options) {
+          return smokeRuntimeAdapters({
+            ...options,
+            createRuntimeAdapterImpl(id) {
+              const adapter = adapters(RUNTIME_DESCRIPTORS.find(runtime => runtime.id === id));
+              const transcribe = adapter.transcribe;
+              adapter.transcribe = (fixture, options) =>
+                transcribe({ ...fixture, reference: { text: 'alpha bravo' } }, options);
+              adapter.stop = async () => {
+                throw shutdownError;
+              };
+              return adapter;
+            },
+          });
+        },
+        createRuntimeAdapterImpl() {
+          assert.fail('scoring must not start after unsafe cleanup');
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(injected, true);
+    assert.equal(caught, shutdownError);
+    assert.equal(caught.operation, 'shutdown');
+    assert.equal(caught.reportError?.code, 'EVIDENCE_WRITE_FAILED');
+    assert.equal(caught.reportError?.cause?.code, 'ENOSPC');
+    assert.equal(events.filter(event => event.type === 'start').length, 1);
+    if (saveStage === 'report checkpoint') assert.ok(caught.runDirectory);
+  });
+}
+
+test('shutdown failure after scoring preserves completed work and leaves the next engine pending', async t => {
+  const layout = temporaryLayout(t);
+  const events = [];
+  const adapters = fakeAdapterFactory(events, { simulateIncompleteLong: false });
+  let caught;
+  try {
+    await runRuntimeBenchmark({
+      layout,
+      manifest: publicManifest(layout),
+      runIdentity: runIdentity(),
+      adapterFactory(runtime) {
+        const adapter = adapters(runtime);
+        adapter.stop = async () => {
+          throw new AdapterTimeoutError('shutdown', 10);
+        };
+        return adapter;
+      },
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.operation, 'shutdown');
+  assert.equal(events.filter(event => event.type === 'start').length, 1);
+  const evidence = JSON.parse(
+    fs.readFileSync(path.join(caught.runDirectory, 'public-evidence.json'))
+  );
+  assert.equal(evidence.completion.state, 'interrupted');
+  assert.equal(evidence.completion.recordedRequests, 1);
+  assert.equal(evidence.completion.pendingRequests, 41);
+  assert.equal(evidence.records[0].status, 'success');
+  assert.equal(evidence.aggregate.cells['mlx-fp32'].workloads.shortQuality.pendingRequests, 3);
+  assert.equal(evidence.aggregate.cells['mlx-fp32'].workloads.shortQuality.wer, undefined);
+});
+
+test('all bootstrap failures still produce a report with no attempted transcription', async t => {
+  const layout = temporaryLayout(t);
+  const manifest = publicManifest(layout);
+  const result = await runCli(['benchmark', 'full'], {
+    homeDirectory: layout.homeDirectory,
+    loadRuntimeLockImpl: loadRuntimeLock,
+    async bootstrapRuntimeImpl() {
+      throw new Error('missing dependency');
+    },
+    async recoverCorpusImpl() {
+      return { manifest };
+    },
+    async smokeRuntimeAdaptersImpl() {
+      assert.fail('no runtime is ready for smoke');
+    },
+    createRuntimeAdapterImpl() {
+      assert.fail('no runtime is ready for scoring');
+    },
+  });
+  const evidence = JSON.parse(
+    fs.readFileSync(path.join(result.runDirectory, 'public-evidence.json'))
+  );
+  assert.equal(evidence.records.length, 42);
+  assert.ok(evidence.records.every(record => record.status === 'error'));
+  assert.equal(evidence.completion.runtimeFailures.length, 7);
+  assert.equal(evidence.completion.pendingRequests, 0);
+  assert.ok(fs.existsSync(path.join(result.runDirectory, 'report.md')));
 });
 
 test('an over-cap warm-up response excludes the runtime before timed requests', async t => {

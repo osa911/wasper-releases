@@ -57,6 +57,7 @@ function workload(records, schedule, { omitMetricsWhenIncomplete = false } = {})
     failureCount: records.filter(record => record.outcome === 'error').length,
     memoryExcludedRequests: memoryExcluded.length,
     unavailableRequests: unavailable.length,
+    pendingRequests: schedule.length - records.length,
     languages: languageProjection(records, schedule, {
       omitMetrics: omitMetricsWhenIncomplete && successful.length !== schedule.length,
     }),
@@ -111,8 +112,12 @@ function aggregateRuntimeEvidence({ records, schedule, requestBalancedFixtureIds
       completedRequests: cellRecords.filter(record => record.outcome === 'success').length,
       failureCount: cellRecords.filter(record => record.outcome === 'error').length,
       workloads: {
-        shortQuality: workload(forSchedule(shortSchedule), shortSchedule),
-        requestBalancedSpeed: workload(forSchedule(speedSchedule), speedSchedule),
+        shortQuality: workload(forSchedule(shortSchedule), shortSchedule, {
+          omitMetricsWhenIncomplete: true,
+        }),
+        requestBalancedSpeed: workload(forSchedule(speedSchedule), speedSchedule, {
+          omitMetricsWhenIncomplete: true,
+        }),
         longRobustness: workload(forSchedule(longSchedule), longSchedule, {
           omitMetricsWhenIncomplete: true,
         }),

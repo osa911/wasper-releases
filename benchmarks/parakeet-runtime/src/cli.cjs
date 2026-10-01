@@ -7,7 +7,14 @@ const os = require('node:os');
 const { resolveLayout } = require('./config.cjs');
 const { MEASURED_PASSES, RUNTIME_DESCRIPTORS } = require('./runtime/constants.cjs');
 
-const COMMANDS = new Set(['audit-public', 'benchmark', 'doctor', 'recover-corpus', 'smoke', 'clean']);
+const COMMANDS = new Set([
+  'audit-public',
+  'benchmark',
+  'doctor',
+  'recover-corpus',
+  'smoke',
+  'clean',
+]);
 const LAYOUT_OPTIONS = new Map([
   ['--cache-dir', 'cacheDir'],
   ['--output-dir', 'outputDir'],
@@ -110,7 +117,15 @@ function createCommandPlan(argv, { homeDirectory } = {}) {
           ...(wasperApp === null ? {} : { wasperApp }),
           ...(homeDirectory === undefined ? {} : { homeDirectory }),
         });
-  return Object.freeze({ command, layout, audioDir, mode, cohort, acceptSourceTerms, writes: false });
+  return Object.freeze({
+    command,
+    layout,
+    audioDir,
+    mode,
+    cohort,
+    acceptSourceTerms,
+    writes: false,
+  });
 }
 
 function readyShortRuntimeDescriptors(runtimeLock) {
@@ -121,12 +136,18 @@ function readyShortRuntimeDescriptors(runtimeLock) {
   );
   const descriptors = RUNTIME_DESCRIPTORS.filter(runtime => readyIds.has(runtime.id));
   if (descriptors.length !== READY_SHORT_RUNTIME_COUNT) {
-    throw new Error(`ready-short requires exactly ${READY_SHORT_RUNTIME_COUNT} publicly ready runtimes`);
+    throw new Error(
+      `ready-short requires exactly ${READY_SHORT_RUNTIME_COUNT} publicly ready runtimes`
+    );
   }
   return descriptors;
 }
 
-function createPublicRunIdentity(manifest, runtimeLock, { mode = 'full', runtimeDescriptors } = {}) {
+function createPublicRunIdentity(
+  manifest,
+  runtimeLock,
+  { mode = 'full', runtimeDescriptors } = {}
+) {
   if (manifest?.schema !== 'wasper.public-run-corpus.v1') {
     throw new TypeError('a verified public corpus manifest is required');
   }
@@ -178,8 +199,7 @@ async function runBenchmark({
   const loadRuntimeLock = loadRuntimeLockImpl ?? require('./runtime/locks.cjs').loadRuntimeLock;
   const bootstrapRuntime =
     bootstrapRuntimeImpl ?? require('./runtime/bootstrap.cjs').bootstrapRuntime;
-  const recoverCorpus =
-    recoverCorpusImpl ?? require('./runtime/corpus-recovery.cjs').recoverCorpus;
+  const recoverCorpus = recoverCorpusImpl ?? require('./runtime/corpus-recovery.cjs').recoverCorpus;
   const smokeRuntimeAdapters =
     smokeRuntimeAdaptersImpl ?? require('./runtime/smoke.cjs').smokeRuntimeAdapters;
   const runRuntimeBenchmark =
@@ -190,22 +210,65 @@ async function runBenchmark({
   const runtimeDescriptors =
     plan.mode === 'ready-short' ? readyShortRuntimeDescriptors(runtimeLock) : RUNTIME_DESCRIPTORS;
   const cohort = plan.mode === 'ready-short' ? 'short' : 'all';
-
+  const runtimeFailures = [];
+  let terminalFailure;
   for (const runtime of runtimeDescriptors) {
-    await bootstrapRuntime(runtime.id, { layout: plan.layout, lock: runtimeLock });
+    try {
+      await bootstrapRuntime(runtime.id, { layout: plan.layout, lock: runtimeLock });
+    } catch (error) {
+      const { describeError, stopsBenchmark } = require('./runtime/failure-policy.cjs');
+      runtimeFailures.push({
+        runtimeId: runtime.id,
+        phase: 'bootstrap',
+        error: describeError(error),
+      });
+      if (stopsBenchmark(error)) {
+        terminalFailure = error;
+        break;
+      }
+    }
   }
-  const prepared = await recoverCorpus({
-    layout: plan.layout,
-    cohort,
-    acceptSourceTerms: plan.acceptSourceTerms,
-    ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
-  });
-  await smokeRuntimeAdapters({
-    layout: plan.layout,
-    manifest: prepared.manifest,
-    runtimeLock,
-    runtimeDescriptors,
-  });
+  let prepared;
+  try {
+    prepared = await recoverCorpus({
+      layout: plan.layout,
+      cohort,
+      acceptSourceTerms: plan.acceptSourceTerms,
+      ...(plan.audioDir === null ? {} : { audioDir: plan.audioDir }),
+    });
+  } catch (error) {
+    if (!terminalFailure) throw error;
+    terminalFailure.reportError ??= error;
+    throw terminalFailure;
+  }
+  if (!terminalFailure) {
+    const available = runtimeDescriptors.filter(
+      runtime => !runtimeFailures.some(failure => failure.runtimeId === runtime.id)
+    );
+    let smoke;
+    try {
+      if (available.length > 0)
+        smoke = await smokeRuntimeAdapters({
+          layout: plan.layout,
+          manifest: prepared.manifest,
+          runtimeLock,
+          runtimeDescriptors: available,
+          allowRuntimeFailures: true,
+          ...(createRuntimeAdapterImpl ? { createRuntimeAdapterImpl } : {}),
+        });
+    } catch (error) {
+      terminalFailure = error;
+      smoke = error.smokeResult;
+    }
+    for (const cell of smoke?.cells ?? []) {
+      if (cell.status === 'failed')
+        runtimeFailures.push({
+          runtimeId: cell.runtimeId,
+          phase: 'smoke',
+          error: cell.error,
+        });
+    }
+  }
   return runRuntimeBenchmark({
     layout: plan.layout,
     manifest: prepared.manifest,
@@ -215,7 +278,10 @@ async function runBenchmark({
     }),
     maxPhysicalFootprintBytes: MAX_PHYSICAL_FOOTPRINT_BYTES,
     runtimeDescriptors,
-    adapterFactory: runtime => createRuntimeAdapter(runtime.id, { layout: plan.layout, runtimeLock }),
+    runtimeFailures,
+    terminalFailure,
+    adapterFactory: runtime =>
+      createRuntimeAdapter(runtime.id, { layout: plan.layout, runtimeLock }),
   });
 }
 
@@ -336,6 +402,13 @@ async function runCli(
     verification: plan.mode === 'ready-short' ? READY_SHORT_VERIFICATION : 'full-comparison',
     runId: result.runId,
     runDirectory: result.runDirectory,
+    ...(result.completion
+      ? {
+          execution: result.completion.state,
+          runtimeFailures: result.completion.runtimeFailures.length,
+          pendingRequests: result.completion.pendingRequests,
+        }
+      : {}),
   });
   stdout.write(`${JSON.stringify(summary)}\n`);
   return summary;

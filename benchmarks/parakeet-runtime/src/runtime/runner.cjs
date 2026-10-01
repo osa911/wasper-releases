@@ -12,6 +12,7 @@ const { createEvidenceStore, EvidenceWriteError } = require('./evidence-store.cj
 const { aggregateRuntimeEvidence } = require('./aggregation.cjs');
 const { writePublicReport } = require('./report.cjs');
 const { projectPublicEvidence } = require('./reporting/public-projection.cjs');
+const { describeError, stopsBenchmark } = require('./failure-policy.cjs');
 
 const DEFAULT_MAX_PHYSICAL_FOOTPRINT_BYTES = 8 * 1024 ** 3;
 const FOOTPRINT_SAMPLE_ATTEMPTS = 2;
@@ -415,7 +416,21 @@ async function transcribeThenSamplePhysicalFootprint({
   }
 }
 
-async function runRuntimeBenchmark({
+async function runRuntimeBenchmark(options) {
+  try {
+    return await executeRuntimeBenchmark(options);
+  } catch (error) {
+    // Preflight may already have found an unsafe live process. Initialization
+    // failures must not hide that warning behind a secondary evidence error.
+    const failure = options?.terminalFailure;
+    if (!failure || error === failure) throw error;
+    failure.reportError ??= error;
+    if (error.runDirectory) failure.runDirectory ??= error.runDirectory;
+    throw failure;
+  }
+}
+
+async function executeRuntimeBenchmark({
   layout,
   manifest,
   runIdentity,
@@ -425,6 +440,8 @@ async function runRuntimeBenchmark({
   priorMemoryExclusions,
   runtimeOrder,
   runtimeDescriptors,
+  runtimeFailures = [],
+  terminalFailure,
   now,
 }) {
   if (typeof adapterFactory !== 'function')
@@ -473,17 +490,63 @@ async function runRuntimeBenchmark({
   });
   const persisted = store.readRequests();
   const byOrder = new Map(persisted.map(record => [record.order, record]));
-  let activationSequence = 0;
+  let activationSequence = store
+    .readActivations()
+    .reduce((next, activation) => Math.max(next, activation.sequence + 1), 0);
   const memoryExcludedCells = priorMemoryExclusionErrors(
     priorMemoryExclusions,
     maxPhysicalFootprintBytes
   );
 
+  function writeReport(state, interruption) {
+    const records = store.readRequests().sort((left, right) => left.order - right.order);
+    const aggregate = aggregateRuntimeEvidence({
+      records,
+      schedule,
+      requestBalancedFixtureIds: hydrated.requestBalancedFixtureIds,
+    });
+    const completion = {
+      state,
+      expectedRequests: schedule.length,
+      recordedRequests: records.length,
+      pendingRequests: schedule.length - records.length,
+      runtimeFailures,
+      ...(interruption ? { interruption: describeError(interruption) } : {}),
+    };
+    const localRun = {
+      runId: store.runId,
+      runIdentity,
+      schedule,
+      records,
+      activations: store.readActivations(),
+      aggregate,
+      completion,
+    };
+    store.writeArtifact('local-summary.json', {
+      runId: store.runId,
+      evidenceHash: store.evidenceHash(records),
+      aggregate,
+      completion,
+    });
+    store.writeArtifact('local-review-queue.json', {
+      runtimeFailures,
+      errors: records
+        .filter(record => record.outcome === 'error')
+        .map(record => ({ order: record.order, raw: record.raw })),
+      ...(interruption ? { interruption: describeError(interruption) } : {}),
+    });
+    const publicEvidence = projectPublicEvidence(localRun);
+    store.writeArtifact('public-evidence.json', publicEvidence);
+    writePublicReport({ store, evidence: publicEvidence });
+    return { ...localRun, runDirectory: store.runDirectory, publicEvidence };
+  }
+
   async function runActivation(cell, pass, items) {
-    const adapter = adapterFactory(cell);
+    let adapter;
     const activation = { sequence: activationSequence++, cellId: cell.id, pass, lifecycle: [] };
     let consumed = 0;
     try {
+      adapter = adapterFactory(cell);
       activation.start = await adapter.start();
       activation.health = await adapter.health();
       activation.identity = await adapter.identity();
@@ -537,7 +600,7 @@ async function runRuntimeBenchmark({
           store.writeRequest(record);
           byOrder.set(item.order, record);
         } catch (error) {
-          if (error instanceof EvidenceWriteError) throw error;
+          if (error instanceof EvidenceWriteError || stopsBenchmark(error)) throw error;
           const record = isPhysicalFootprintCapError(error)
             ? memoryExcludedRecord(item, fixture, error)
             : errorRecord(item, fixture, error);
@@ -553,7 +616,7 @@ async function runRuntimeBenchmark({
         consumed += 1;
       }
     } catch (error) {
-      if (error instanceof EvidenceWriteError) throw error;
+      if (error instanceof EvidenceWriteError || stopsBenchmark(error)) throw error;
       activation.error = isPhysicalFootprintCapError(error)
         ? {
             name: error.name,
@@ -571,7 +634,6 @@ async function runRuntimeBenchmark({
           }
         : { name: error?.name ?? 'Error', message: error?.message ?? String(error) };
       store.writeActivation(activation);
-      if (error?.code === 'ETIMEDOUT' && error?.operation === 'shutdown') throw error;
       for (const item of items) {
         if (byOrder.has(item.order)) continue;
         const record = isPhysicalFootprintCapError(error)
@@ -586,14 +648,19 @@ async function runRuntimeBenchmark({
       if (isPhysicalFootprintCapError(error)) memoryExcludedCells.set(cell.id, error);
     } finally {
       try {
-        await adapter.stop();
+        await adapter?.stop();
       } catch (error) {
         if (error?.message !== 'stop requires an active adapter') {
+          error.operation ??= 'shutdown';
           activation.stopError = {
             name: error?.name ?? 'Error',
             message: error?.message ?? String(error),
           };
-          store.writeActivation(activation);
+          try {
+            store.writeActivation(activation);
+          } catch (writeError) {
+            error.evidenceError = writeError;
+          }
           throw error;
         }
       }
@@ -601,77 +668,77 @@ async function runRuntimeBenchmark({
     return consumed;
   }
 
-  for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
-    for (const cell of rotate(baseRuntimeOrder, pass - 1)) {
-      const items = schedule.filter(item => item.pass === pass && item.cellId === cell.id);
-      const pending = items.filter(item => !byOrder.has(item.order));
-      for (const item of pending.filter(item => fixtures.get(item.fixtureId).unavailable)) {
-        const record = unavailableRecord(item, fixtures.get(item.fixtureId));
-        store.writeRequest(record);
-        byOrder.set(item.order, record);
-      }
-      const measured = pending.filter(item => !fixtures.get(item.fixtureId).unavailable);
-      if (measured.length === 0) continue;
-      const priorExclusion = memoryExcludedCells.get(cell.id);
-      if (priorExclusion) {
-        for (const item of measured) {
-          const record = memoryExcludedRecord(item, fixtures.get(item.fixtureId), priorExclusion);
+  try {
+    if (terminalFailure) throw terminalFailure;
+    writeReport('running');
+    for (let pass = 1; pass <= MEASURED_PASSES; pass += 1) {
+      for (const cell of rotate(baseRuntimeOrder, pass - 1)) {
+        const items = schedule.filter(item => item.pass === pass && item.cellId === cell.id);
+        const pending = items.filter(item => !byOrder.has(item.order));
+        for (const item of pending.filter(item => fixtures.get(item.fixtureId).unavailable)) {
+          const record = unavailableRecord(item, fixtures.get(item.fixtureId));
           store.writeRequest(record);
           byOrder.set(item.order, record);
         }
-        continue;
-      }
-      for (let index = 0; index < measured.length;) {
-        if (memoryExcludedCells.has(cell.id)) {
-          const error = memoryExcludedCells.get(cell.id);
-          for (const item of measured.slice(index)) {
-            const record = memoryExcludedRecord(item, fixtures.get(item.fixtureId), error);
+        const measured = pending.filter(item => !fixtures.get(item.fixtureId).unavailable);
+        if (measured.length === 0) continue;
+        const preflightFailure = runtimeFailures.find(failure => failure.runtimeId === cell.id);
+        if (preflightFailure) {
+          for (const item of measured) {
+            const record = errorRecord(item, fixtures.get(item.fixtureId), preflightFailure.error);
+            record.raw.error.phase = preflightFailure.phase;
             store.writeRequest(record);
             byOrder.set(item.order, record);
           }
-          break;
+          writeReport('running');
+          continue;
         }
-        const cohort = fixtures.get(measured[index].fixtureId).cohort;
-        let end = index + 1;
-        if (cohort === 'short') {
-          while (
-            end < measured.length &&
-            fixtures.get(measured[end].fixtureId).cohort === 'short'
-          ) {
-            end += 1;
+        const priorExclusion = memoryExcludedCells.get(cell.id);
+        if (priorExclusion) {
+          for (const item of measured) {
+            const record = memoryExcludedRecord(item, fixtures.get(item.fixtureId), priorExclusion);
+            store.writeRequest(record);
+            byOrder.set(item.order, record);
           }
+          continue;
         }
-        index += await runActivation(cell, pass, measured.slice(index, end));
+        for (let index = 0; index < measured.length;) {
+          if (memoryExcludedCells.has(cell.id)) {
+            const error = memoryExcludedCells.get(cell.id);
+            for (const item of measured.slice(index)) {
+              const record = memoryExcludedRecord(item, fixtures.get(item.fixtureId), error);
+              store.writeRequest(record);
+              byOrder.set(item.order, record);
+            }
+            break;
+          }
+          const cohort = fixtures.get(measured[index].fixtureId).cohort;
+          let end = index + 1;
+          if (cohort === 'short') {
+            while (
+              end < measured.length &&
+              fixtures.get(measured[end].fixtureId).cohort === 'short'
+            ) {
+              end += 1;
+            }
+          }
+          index += await runActivation(cell, pass, measured.slice(index, end));
+          writeReport('running');
+        }
       }
     }
+    return writeReport('completed');
+  } catch (error) {
+    // A full disk may prevent a new report. Keep the original error and the
+    // last successful checkpoint rather than replacing it with a save error.
+    try {
+      writeReport('interrupted', error);
+    } catch (reportError) {
+      error.reportError = reportError;
+    }
+    error.runDirectory = store.runDirectory;
+    throw error;
   }
-
-  const records = store.readRequests().sort((left, right) => left.order - right.order);
-  const aggregate = aggregateRuntimeEvidence({
-    records,
-    schedule,
-    requestBalancedFixtureIds: hydrated.requestBalancedFixtureIds,
-  });
-  const summary = { runId: store.runId, evidenceHash: store.evidenceHash(records), aggregate };
-  store.writeArtifact('local-summary.json', summary);
-  store.writeArtifact('local-review-queue.json', {
-    errors: records
-      .filter(record => record.outcome === 'error')
-      .map(record => ({ order: record.order, raw: record.raw })),
-  });
-  const activations = store.readActivations();
-  const localRun = {
-    runId: store.runId,
-    runIdentity,
-    schedule,
-    records,
-    activations,
-    aggregate,
-  };
-  const publicEvidence = projectPublicEvidence(localRun);
-  store.writeArtifact('public-evidence.json', publicEvidence);
-  writePublicReport({ store, evidence: publicEvidence });
-  return { ...localRun, runDirectory: store.runDirectory, publicEvidence };
 }
 
 module.exports = {
