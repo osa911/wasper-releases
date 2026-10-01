@@ -57,7 +57,7 @@ Mode: \`${format(status.mode)}\`
 Verification: \`${format(status.verification)}\`
 ${partialRunWarning}
 ${progress}
-Warm-up establishes runtime residency and is discarded. Timed requests measure runtime response only. Rows with incomplete coverage intentionally omit quality and speed metrics. Pending requests were not attempted; failures and memory exclusions are recorded separately.
+Warm-up establishes runtime residency and is discarded. Timed requests measure runtime response only. Rows with incomplete coverage intentionally omit quality and speed metrics. Pending requests have no saved outcome; failures and memory exclusions are recorded separately.
 
 ${workloadTable(evidence, 'shortQuality', 'Short quality')}
 
