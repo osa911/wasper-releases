@@ -18,7 +18,8 @@ function projectedStatus(source) {
     return undefined;
   }
   const expected = PUBLIC_RUN_STATUSES[source?.mode];
-  if (source.cohort !== expected.cohort || source.verification !== expected.verification) return undefined;
+  if (source.cohort !== expected.cohort || source.verification !== expected.verification)
+    return undefined;
   return { cohort: expected.cohort, mode: source.mode, verification: expected.verification };
 }
 
@@ -31,7 +32,8 @@ function projectedIdentity(runIdentity) {
   if (source.hardware && typeof source.hardware === 'object') {
     result.hardware = {};
     for (const field of ['arch', 'platform', 'release']) {
-      if (typeof source.hardware[field] === 'string') result.hardware[field] = source.hardware[field];
+      if (typeof source.hardware[field] === 'string')
+        result.hardware[field] = source.hardware[field];
     }
   }
   if (source.wasperRelease && typeof source.wasperRelease === 'object') {
@@ -57,7 +59,9 @@ function projectedFixture(record) {
     ...(typeof evidence.normalizedWavSha256 === 'string'
       ? { normalizedWavSha256: evidence.normalizedWavSha256 }
       : {}),
-    ...(typeof evidence.referenceSha256 === 'string' ? { referenceSha256: evidence.referenceSha256 } : {}),
+    ...(typeof evidence.referenceSha256 === 'string'
+      ? { referenceSha256: evidence.referenceSha256 }
+      : {}),
     ...(finite(evidence.durationSeconds) === undefined
       ? {}
       : { durationSeconds: evidence.durationSeconds }),
@@ -114,7 +118,11 @@ function projectedRecord(record) {
   };
   const score = record.outcome === 'success' ? projectedScore(record.score) : null;
   if (score !== null) result.score = score;
-  if (record.outcome === 'success' && finite(record.audioSeconds) !== undefined && finite(record.wallSeconds) !== undefined) {
+  if (
+    record.outcome === 'success' &&
+    finite(record.audioSeconds) !== undefined &&
+    finite(record.wallSeconds) !== undefined
+  ) {
     result.timing = {
       audioSeconds: record.audioSeconds,
       wallSeconds: record.wallSeconds,
@@ -136,8 +144,10 @@ function projectedWorkload(workload, { omitPartialLongMetrics = false } = {}) {
     'failureCount',
     'memoryExcludedRequests',
     'unavailableRequests',
+    'pendingRequests',
   ]) {
-    if (Number.isSafeInteger(workload?.[field]) && workload[field] >= 0) result[field] = workload[field];
+    if (Number.isSafeInteger(workload?.[field]) && workload[field] >= 0)
+      result[field] = workload[field];
   }
   const partial =
     omitPartialLongMetrics &&
@@ -205,12 +215,15 @@ function projectPublicEvidence(run) {
   if (run === null || typeof run !== 'object' || Array.isArray(run)) {
     throw new TypeError('local run evidence must be an object');
   }
-  if (typeof run.runId !== 'string' || run.runId === '') throw new TypeError('local run id is required');
+  if (typeof run.runId !== 'string' || run.runId === '')
+    throw new TypeError('local run id is required');
   if (!Array.isArray(run.records)) throw new TypeError('local run records are required');
   const runtimeIdentities = projectedRuntimeIdentities(run.activations);
   const publicRun = projectedIdentity(run.runIdentity);
   if (publicRun.wasperRelease === undefined) {
-    const wasperIdentity = runtimeIdentities.find(identity => identity.cellId === 'wasper-metal-int8');
+    const wasperIdentity = runtimeIdentities.find(
+      identity => identity.cellId === 'wasper-metal-int8'
+    );
     if (wasperIdentity?.identity.release !== undefined) {
       publicRun.wasperRelease = wasperIdentity.identity.release;
     }
@@ -219,6 +232,31 @@ function projectPublicEvidence(run) {
     schema: PUBLIC_EVIDENCE_SCHEMA,
     runId: run.runId,
     run: publicRun,
+    ...(run.completion
+      ? {
+          completion: {
+            state: run.completion.state,
+            expectedRequests: run.completion.expectedRequests,
+            recordedRequests: run.completion.recordedRequests,
+            pendingRequests: run.completion.pendingRequests,
+            runtimeFailures: run.completion.runtimeFailures.map(failure => ({
+              runtimeId: failure.runtimeId,
+              phase: failure.phase,
+              code: failure.error?.code ?? null,
+            })),
+            ...(run.completion.interruption
+              ? {
+                  interruption: {
+                    code: run.completion.interruption.code,
+                    ...(run.completion.interruption.operation
+                      ? { operation: run.completion.interruption.operation }
+                      : {}),
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
     runtimeIdentities,
     records: run.records.map(projectedRecord),
     aggregate: projectedAggregate(run.aggregate),

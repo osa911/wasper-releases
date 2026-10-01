@@ -182,7 +182,7 @@ GPU-heavy work on the Mac.
 On completion, the command prints a `runDirectory`. Open `report.md` in that
 directory for short and long WER, CER, speed, and completed/expected request
 counts. Inspect `local-review-queue.json` there for failed requests before
-comparing runtimes. The report withholds long quality and speed when coverage
+comparing runtimes. The report withholds quality and speed for any workload whose coverage
 is incomplete. Do not rank a partial row against a complete one or treat the
 `ready-short` verification report as the full comparison.
 
@@ -192,6 +192,36 @@ Saving results is outside the response timer. If a result cannot be saved,
 the benchmark stops with `EVIDENCE_WRITE_FAILED` and keeps earlier records.
 It does not count a disk-write failure as a transcription failure. A new run
 creates a separate run directory and preserves the interrupted run.
+
+### Engine failures and partial reports
+
+The full benchmark continues when a runtime cannot be installed or fails its
+initial smoke check, provided its process has stopped. That runtime remains
+in the comparison. Its scheduled requests are recorded as errors with the
+`bootstrap` or `smoke` phase, without attempting transcription. The remaining
+runtimes complete their schedules. A standalone `npm run smoke` still stops
+on a failed check so you can diagnose setup before starting a benchmark.
+
+A failure on one scored recording is saved for that recording. Later recordings
+continue, using a fresh process when the memory cap requires it. The 8 GiB cap
+and its measurement limitations described below remain the same.
+
+The benchmark saves `report.md` and `public-evidence.json` before scoring and
+after each runtime activation. A completed run records `execution: completed`
+in the command output, even when some runtimes failed. Inspect the failure and
+completion counts before comparing results.
+
+If a process cannot be stopped, or an evidence write fails, the benchmark stops
+before starting another engine and exits with an error. It attempts to update
+the partial report with `interrupted` status and prints the run directory.
+The report separates completed results, recorded errors, and pending requests.
+`local-review-queue.json` retains the detailed setup or interruption diagnostic;
+the public report omits local paths and raw error messages.
+
+If the disk remains full, updating the report may also fail. The command prints
+that save error and preserves the last successful checkpoint and individual
+request records. After an abrupt process kill or power loss, the last checkpoint
+may still say `running`; it is not a completed comparison.
 
 `--accept-source-terms` acknowledges the terms and licenses recorded in the
 corpus manifests before any long-source download. Read those terms first. The

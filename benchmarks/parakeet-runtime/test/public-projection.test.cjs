@@ -29,9 +29,7 @@ function localRunWithText() {
             identityHash: 'd'.repeat(64),
             identity: {
               schema: 'wasper.parakeet-runtime-benchmark.model-identity.v2',
-              artifacts: [
-                { path: '/private/models/model.bin', bytes: 42, sha256: 'e'.repeat(64) },
-              ],
+              artifacts: [{ path: '/private/models/model.bin', bytes: 42, sha256: 'e'.repeat(64) }],
               executable: {
                 path: '/private/bin/runtime',
                 version: '1.0.0',
@@ -90,7 +88,11 @@ function localRunWithText() {
     aggregate: {
       cells: {
         'wasper-metal-int8': {
-          runtime: { id: 'wasper-metal-int8', label: 'Wasper', languagePolicy: { mode: 'automatic', languageHint: null } },
+          runtime: {
+            id: 'wasper-metal-int8',
+            label: 'Wasper',
+            languagePolicy: { mode: 'automatic', languageHint: null },
+          },
           workloads: {
             longRobustness: {
               expectedRequests: 3,
@@ -109,6 +111,41 @@ function localRunWithText() {
     },
   };
 }
+
+test('partial reports expose progress but never copy local failure messages or paths', () => {
+  const run = localRunWithText();
+  run.completion = {
+    state: 'interrupted',
+    expectedRequests: 6,
+    recordedRequests: 1,
+    pendingRequests: 5,
+    runtimeFailures: [
+      {
+        runtimeId: 'mlx-fp32',
+        phase: 'bootstrap',
+        error: {
+          message: 'Could not load /private/fixture-only-model.bin',
+          code: 'ENOENT',
+        },
+      },
+    ],
+    interruption: { code: 'ETIMEDOUT', operation: 'shutdown', message: '/private/process.log' },
+  };
+  const projected = projectPublicEvidence(run);
+  assert.deepEqual(projected.completion, {
+    state: 'interrupted',
+    expectedRequests: 6,
+    recordedRequests: 1,
+    pendingRequests: 5,
+    runtimeFailures: [{ runtimeId: 'mlx-fp32', phase: 'bootstrap', code: 'ENOENT' }],
+    interruption: { code: 'ETIMEDOUT', operation: 'shutdown' },
+  });
+  assert.doesNotMatch(JSON.stringify(projected), /fixture-only-model|\/private\/process/);
+  const report = createPublicReport(projected);
+  assert.match(report, /interrupted/);
+  assert.match(report, /1\/6 scheduled outcomes; 5 pending/);
+  assert.match(report, /shutdown/);
+});
 
 test('public evidence omits transcript and source bytes', () => {
   const projection = projectPublicEvidence(localRunWithText());
